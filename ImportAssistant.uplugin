@@ -1,0 +1,18 @@
+{
+    "FileVersion": 3,
+    "Version": 1,
+    "VersionName": "0.1.0",
+    "FriendlyName": "Import Assistant",
+    "Description": "Review and selectively reimport animation assets sharing FBX sources.",
+    "Category": "Editor",
+    "CanContainContent": false,
+    "EnabledByDefault": true,
+    "IsBetaVersion": true,
+    "Modules": [ 
+        { 
+            "Name": "ImportAssistant", 
+            "Type": "Editor", 
+            "LoadingPhase": "PostEngineInit"
+        } 
+    ]
+}
