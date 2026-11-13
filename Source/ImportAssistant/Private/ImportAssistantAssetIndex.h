@@ -14,7 +14,7 @@ class FAssetIndex
 public:
     FAssetIndex();
     ~FAssetIndex();
-    void Configure(const TArray<FName>& Roots, bool bRecursive);
+    void Configure(const TArray<FName>& Roots, bool bRecursive, const TArray<FTopLevelAssetPath>& Classes = {});
     void Tick();
     void RefreshMemory();
     bool IsReady() const;

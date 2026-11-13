@@ -1,6 +1,6 @@
 #include "ImportAssistantAssetIndex.h"
 
-#include "Animation/AnimSequence.h"
+#include "ImportAssistantAssetAccess.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Async/Async.h"
 #include "EditorFramework/AssetImportData.h"
@@ -22,49 +22,40 @@ FAssetIndex::FAssetIndex() : Changes(MakeShared<FChanges, ESPMode::ThreadSafe>()
 {
     Registry = &FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
     const auto State = Changes;
-    const FTopLevelAssetPath AnimationClass = UAnimSequence::StaticClass()->GetClassPathName();
-    auto Changed = [State, AnimationClass](const FAssetData& Data)
+    const auto Classes = GetSupportedAssetClasses();
+    auto Changed = [State, Classes](const FAssetData& Data)
     {
-        if (Data.AssetClassPath == AnimationClass) { State->Add(Data.GetSoftObjectPath()); }
+        if (Classes.Contains(Data.AssetClassPath)) { State->Add(Data.GetSoftObjectPath()); }
     };
     Added = Registry->OnAssetAdded().AddLambda(Changed);
     Removed = Registry->OnAssetRemoved().AddLambda(Changed);
     Updated = Registry->OnAssetUpdated().AddLambda(Changed);
     UpdatedOnDisk = Registry->OnAssetUpdatedOnDisk().AddLambda(Changed);
-    Renamed = Registry->OnAssetRenamed().AddLambda([State, AnimationClass](const FAssetData& Data, const FString& OldPath)
+    Renamed = Registry->OnAssetRenamed().AddLambda([State, Classes](const FAssetData& Data, const FString& OldPath)
     {
-        if (Data.AssetClassPath != AnimationClass) { return; }
+        if (!Classes.Contains(Data.AssetClassPath)) { return; }
         State->Add(FSoftObjectPath(OldPath));
         State->Add(Data.GetSoftObjectPath());
     });
-    SourceChanged = UAssetImportData::OnImportDataChanged.AddLambda([State](const FAssetImportInfo&, const UAssetImportData* Data)
-    {
-        if (const UAnimSequence* Animation = Data->GetTypedOuter<UAnimSequence>()) { State->Add(FSoftObjectPath(Animation)); }
-    });
     auto MemoryChanged = [State](UObject* Object)
     {
-        if (const UAnimSequence* Animation = Cast<UAnimSequence>(Object)) { State->Add(FSoftObjectPath(Animation)); }
+        for (UObject* Owner = Object; Owner; Owner = Owner->GetOuter())
+        {
+            if (IsSupportedFbxAsset(Owner)) { State->Add(FSoftObjectPath(Owner)); return; }
+        }
     };
+    SourceChanged = UAssetImportData::OnImportDataChanged.AddLambda([MemoryChanged](const FAssetImportInfo&, const UAssetImportData* Data)
+        { MemoryChanged(const_cast<UAssetImportData*>(Data)); });
     MemoryCreated = Registry->OnInMemoryAssetCreated().AddLambda(MemoryChanged);
     MemoryDeleted = Registry->OnInMemoryAssetDeleted().AddLambda(MemoryChanged);
     AssetLoaded = FCoreUObjectDelegates::OnAssetLoaded.AddLambda(MemoryChanged);
-    ObjectChanged = FCoreUObjectDelegates::OnObjectPropertyChanged.AddLambda([State](UObject* Object, FPropertyChangedEvent&)
-    {
-        const UAnimSequence* Animation = Cast<UAnimSequence>(Object);
-        if (!Animation) { Animation = Object->GetTypedOuter<UAnimSequence>(); }
-        if (Animation) { State->Add(FSoftObjectPath(Animation)); }
-    });
-    Transacted = FCoreUObjectDelegates::OnObjectTransacted.AddLambda([MemoryChanged](UObject* Object, const FTransactionObjectEvent&)
-    {
-        if (UAnimSequence* Animation = Object->GetTypedOuter<UAnimSequence>()) { MemoryChanged(Animation); }
-        else { MemoryChanged(Object); }
-    });
+    ObjectChanged = FCoreUObjectDelegates::OnObjectPropertyChanged.AddLambda([MemoryChanged](UObject* Object, FPropertyChangedEvent&) { MemoryChanged(Object); });
+    Transacted = FCoreUObjectDelegates::OnObjectTransacted.AddLambda([MemoryChanged](UObject* Object, const FTransactionObjectEvent&) { MemoryChanged(Object); });
     PackageDirtied = UPackage::PackageMarkedDirtyEvent.AddLambda([State](UPackage* Package, bool)
     {
-        // 某些原生路径更新不广播来源事件，脏包事件补充这些内存状态。
         ForEachObjectWithOuter(Package, [State](UObject* Object)
         {
-            if (const UAnimSequence* Animation = Cast<UAnimSequence>(Object)) { State->Add(FSoftObjectPath(Animation)); }
+            if (IsSupportedFbxAsset(Object)) { State->Add(FSoftObjectPath(Object)); }
         }, EGetObjectsFlags::None);
     });
     Mounted = FPackageName::OnContentPathMounted().AddLambda([State](const FString&, const FString&) { State->Add(FSoftObjectPath()); });
@@ -90,12 +81,12 @@ FAssetIndex::~FAssetIndex()
     if (Build.IsValid()) { Build.Wait(); }
 }
 
-void FAssetIndex::Configure(const TArray<FName>& Roots, bool bRecursive)
+void FAssetIndex::Configure(const TArray<FName>& Roots, bool bRecursive, const TArray<FTopLevelAssetPath>& Classes)
 {
     Filter = FARFilter();
     Filter.PackagePaths = Roots;
     Filter.bRecursivePaths = bRecursive;
-    Filter.ClassPaths.Add(UAnimSequence::StaticClass()->GetClassPathName());
+    Filter.ClassPaths = Classes.IsEmpty() ? GetSupportedAssetClasses() : Classes;
     Filter.bIncludeOnlyOnDiskAssets = true;
     DataSourceDirectory = GetDefault<UEditorPerProjectUserSettings>()->DataSourceFolder.Path;
     PendingMemory.Reset();
@@ -126,7 +117,7 @@ void FAssetIndex::RefreshMemory()
 
 bool FAssetIndex::InScope(const FAssetData& Data) const
 {
-    if (!Data.IsValid() || Data.AssetClassPath != UAnimSequence::StaticClass()->GetClassPathName()) { return false; }
+    if (!Data.IsValid() || !Filter.ClassPaths.Contains(Data.AssetClassPath)) { return false; }
     const FString Path = Data.PackagePath.ToString();
     for (const FName Root : Filter.PackagePaths)
     {
@@ -262,9 +253,9 @@ FString FAssetIndex::GetStatus() const
 {
     if (!bConfigured) { return TEXT("尚未配置检索范围"); }
     if (Registry->IsLoadingAssets()) { return TEXT("正在发现资产，当前结果不完整…"); }
-    if (bRebuild || Build.IsValid()) { return TEXT("正在建立动画元数据索引…"); }
+    if (bRebuild || Build.IsValid()) { return TEXT("正在建立资产元数据索引…"); }
     if (!IsReady()) { return TEXT("正在合并资产变化…"); }
-    return FString::Printf(TEXT("指定范围索引就绪：%d 个 AnimSequence"), Records.Num());
+    return FString::Printf(TEXT("指定范围索引就绪：%d 个 FBX 目标资产"), Records.Num());
 }
 
 TSharedRef<const FSearchSnapshot, ESPMode::ThreadSafe> FAssetIndex::Snapshot() const

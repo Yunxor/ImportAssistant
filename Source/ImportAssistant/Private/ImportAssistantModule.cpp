@@ -12,7 +12,7 @@ public:
     {
         if (IsRunningCommandlet()) { return; }
         FGlobalTabmanager::Get()->RegisterNomadTabSpawner(TEXT("ImportAssistant"), FOnSpawnTab::CreateRaw(this, &FImportAssistantModule::SpawnTab))
-            .SetDisplayName(FText::FromString(TEXT("动画导入助手"))).SetMenuType(ETabSpawnerMenuType::Hidden);
+            .SetDisplayName(FText::FromString(TEXT("FBX 资产导入助手"))).SetMenuType(ETabSpawnerMenuType::Hidden);
         UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FImportAssistantModule::RegisterMenu));
     }
 
@@ -31,9 +31,12 @@ private:
     void RegisterMenu()
     {
         FToolMenuOwnerScoped Owner(this);
-        UToolMenu* Menu = UToolMenus::Get()->ExtendMenu(TEXT("LevelEditor.MainMenu.Tools"));
-        Menu->FindOrAddSection(TEXT("ImportAssistant")).AddMenuEntry(TEXT("OpenImportAssistant"), FText::FromString(TEXT("动画导入助手")),
-            FText::FromString(TEXT("检索同源 FBX 动画并选择性更新")), FSlateIcon(), FUIAction(FExecuteAction::CreateLambda([]
+        UToolMenu* MainMenu = UToolMenus::Get()->ExtendMenu(TEXT("LevelEditor.MainMenu"));
+        MainMenu->FindOrAddSection(NAME_None).AddSubMenu(TEXT("FBX"), FText::FromString(TEXT("FBX 工具")),
+            FText::FromString(TEXT("FBX 资产工具")), FNewToolMenuChoice());
+        UToolMenu* Menu = UToolMenus::Get()->RegisterMenu(TEXT("LevelEditor.MainMenu.FBX"));
+        Menu->FindOrAddSection(TEXT("ImportAssistant")).AddMenuEntry(TEXT("OpenImportAssistant"), FText::FromString(TEXT("资产导入助手")),
+            FText::FromString(TEXT("检索同源 FBX 动画、静态模型和骨骼模型并选择性更新")), FSlateIcon(), FUIAction(FExecuteAction::CreateLambda([]
             {
                 FGlobalTabmanager::Get()->TryInvokeTab(FName(TEXT("ImportAssistant")));
             })));

@@ -3,6 +3,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
 #include "ImportAssistantAssetIndex.h"
+#include "ImportAssistantAssetAccess.h"
 #include "SImportAssistantWindow.h"
 #include "Animation/AnimSequence.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -63,11 +64,11 @@ bool FImportAssistantMatchingTest::RunTest(const FString&)
     std::atomic_bool Cancel(false);
     FMatchSettings Settings;
     FSearchOutput Result = Match(Index, {TEXT("C:/ImportAssistantMissing/Run.fbx")}, Settings, {}, Cancel);
-    TestEqual(TEXT("两个同源动画和一个未知来源"), Result.Rows.Num(), 3);
-    TestEqual(TEXT("未知来源计数"), Result.UnknownCount, 1);
+    TestEqual(TEXT("只输出两个同源动画，不追加无关未知来源资产"), Result.Rows.Num(), 2);
+    TestEqual(TEXT("无关未知来源仅计入范围诊断"), Result.UnmatchedUnknownCount, 1);
     Settings.bMatchKeyword = true;
     Result = Match(Index, {TEXT("C:/ImportAssistantMissing/Run.fbx"), TEXT("D:/Other/Run.fbx")}, Settings, {}, Cancel);
-    TestEqual(TEXT("路径和关键词取并集且去重"), Result.Rows.Num(), 5);
+    TestEqual(TEXT("路径和关键词取并集且去重，不混入范围诊断"), Result.Rows.Num(), 4);
     int32 Conflicts = 0;
     for (const FRowPtr& Row : Result.Rows) { Conflicts += Row->bFileConflict ? 1 : 0; TestFalse(TEXT("不自动勾选"), Row->bSelected); }
     TestEqual(TEXT("两个资产的两种输入均标记冲突"), Conflicts, 4);
@@ -75,6 +76,108 @@ bool FImportAssistantMatchingTest::RunTest(const FString&)
     TestTrue(TEXT("取消任务不发布部分结果"), Match(Index, {TEXT("C:/Run.fbx")}, Settings, {}, Cancel).Rows.IsEmpty());
     return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FImportAssistantUnknownIsolationTest, "ImportAssistant.Matching.UnknownSourceIsolation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FImportAssistantUnknownIsolationTest::RunTest(const FString&)
+{
+    FSearchSnapshot Index;
+    for (const auto Category : {EImportAssistantAssetCategory::Animation, EImportAssistantAssetCategory::StaticMesh, EImportAssistantAssetCategory::SkeletalMesh})
+    {
+        auto Record = MakeShared<FAssetRecord, ESPMode::ThreadSafe>();
+        Record->AssetClassPath = GetAssetClassPath(Category);
+        Record->Name = TEXT("Unrelated_") + Record->AssetClassPath.GetAssetName().ToString();
+        Record->PackageName = TEXT("/Game/UnknownTests/") + Record->Name;
+        Record->ObjectPath = FSoftObjectPath(Record->PackageName + TEXT(".") + Record->Name);
+        Index.Records.Add(Record);
+        Index.UnknownRecords.Add(Record);
+    }
+    const TArray<FString> Files = {TEXT("C:/UnknownTests/Hero_Run.fbx"), TEXT("C:/UnknownTests/Hero_Walk.fbx")};
+    FMatchSettings Settings;
+    std::atomic_bool Cancel(false);
+    for (const bool bMatchKeyword : {false, true})
+    {
+        Settings.bMatchKeyword = bMatchKeyword;
+        const FSearchOutput Result = Match(Index, Files, Settings, {}, Cancel);
+        TestTrue(TEXT("无关联的三类资产都不能仅凭来源缺失进入结果"), Result.Rows.IsEmpty());
+        TestEqual(TEXT("多个 FBX 不重复累计范围诊断"), Result.UnmatchedUnknownCount, 3);
+        TestTrue(TEXT("范围诊断不能掩盖输入 FBX 的零匹配"), Result.UnmatchedFiles == Files);
+        const auto Groups = BuildResultGroups(Files, Result.Rows, false);
+        if (!TestEqual(TEXT("无关资产不生成来源未知组"), Groups.Num(), Files.Num())) { return false; }
+        for (const auto& Group : Groups)
+        {
+            TestTrue(TEXT("每个 FBX 仅显示零匹配占位行"), Group->Children.Num() == 1 && !Group->Children[0]->Row.IsValid());
+        }
+    }
+    FFileSearchScope Scope;
+    Scope.File = Files[0];
+    Scope.AssetClassPath = GetAssetClassPath(EImportAssistantAssetCategory::SkeletalMesh);
+    Scope.SearchRoots = {TEXT("/Game/UnknownTests")};
+    const FSearchOutput Scoped = Match(Index, {Files[0]}, Settings, {}, Cancel, {Scope});
+    TestEqual(TEXT("诊断仅统计对应类别及目录范围"), Scoped.UnmatchedUnknownCount, 1);
+    Scope.SearchRoots = {TEXT("/Game/Elsewhere")};
+    TestEqual(TEXT("目录外未知来源不计入诊断"), Match(Index, {Files[0]}, Settings, {}, Cancel, {Scope}).UnmatchedUnknownCount, 0);
+    const FSearchOutput Empty = Match(Index, {}, Settings, {}, Cancel);
+    TestTrue(TEXT("未添加 FBX 时不生成结果或诊断"), Empty.Rows.IsEmpty() && Empty.UnmatchedUnknownCount == 0);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FImportAssistantUnknownKeywordTest, "ImportAssistant.Matching.KeywordUnknownCandidates",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FImportAssistantUnknownKeywordTest::RunTest(const FString&)
+{
+    FSearchSnapshot Index;
+    for (const auto Category : {EImportAssistantAssetCategory::Animation, EImportAssistantAssetCategory::StaticMesh, EImportAssistantAssetCategory::SkeletalMesh})
+    {
+        auto Record = MakeShared<FAssetRecord, ESPMode::ThreadSafe>();
+        Record->AssetClassPath = GetAssetClassPath(Category);
+        Record->Name = TEXT("Hero_Run_") + Record->AssetClassPath.GetAssetName().ToString();
+        Record->PackageName = TEXT("/Game/UnknownTests/") + Record->Name;
+        Record->ObjectPath = FSoftObjectPath(Record->PackageName + TEXT(".") + Record->Name);
+        if (Category != EImportAssistantAssetCategory::Animation) { Record->Sources.AddDefaulted(); }
+        Index.Records.Add(Record);
+        Index.UnknownRecords.Add(Record);
+    }
+    auto Unrelated = MakeShared<FAssetRecord, ESPMode::ThreadSafe>();
+    Unrelated->Name = TEXT("UnrelatedMesh");
+    Unrelated->PackageName = TEXT("/Game/UnknownTests/UnrelatedMesh");
+    Unrelated->ObjectPath = FSoftObjectPath(TEXT("/Game/UnknownTests/UnrelatedMesh.UnrelatedMesh"));
+    Unrelated->AssetClassPath = GetAssetClassPath(EImportAssistantAssetCategory::SkeletalMesh);
+    Index.Records.Add(Unrelated);
+    Index.UnknownRecords.Add(Unrelated);
+    const TArray<FString> Files = {TEXT("C:/UnknownTests/Hero_Run.fbx"), TEXT("D:/UnknownTests/Hero_Run.fbx")};
+    FMatchSettings Settings;
+    Settings.bMatchKeyword = true;
+    std::atomic_bool Cancel(false);
+    const FSearchOutput Result = Match(Index, Files, Settings, {}, Cancel);
+    if (!TestEqual(TEXT("三类未知来源资产仍可按实际关键词匹配两份 FBX"), Result.Rows.Num(), 6)) { return false; }
+    TestEqual(TEXT("另有数量排除已匹配候选且按资产去重"), Result.UnmatchedUnknownCount, 1);
+    TestTrue(TEXT("关键词候选计入匹配而不是零匹配"), Result.UnmatchedFiles.IsEmpty());
+    for (const FRowPtr& Row : Result.Rows)
+    {
+        TestEqual(TEXT("匹配依据是关键词而不是来源未知"), Row->Reason, EMatchReason::Keyword);
+        TestTrue(TEXT("Tooltip 保留实际命中的关键词"), Row->ReasonTooltip.Contains(TEXT("命中关键词：Hero、Run")));
+        TestTrue(TEXT("保留实际 FBX 关系，但缺来源槽位不能勾选或自动绑定"), Files.Contains(Row->File) &&
+            Row->SourceIndex == INDEX_NONE && !Row->CanSelect() && !Row->bSelected && Row->Status.Contains(TEXT("来源槽位缺失")));
+        // 即使外部错误设置勾选状态，预检和队列也不能把没有槽位的关键词候选作为更新任务。
+        Row->bSelected = true;
+    }
+    const auto Groups = BuildResultGroups(Files, Result.Rows, false);
+    if (!TestEqual(TEXT("关键词候选只归入对应 FBX 组"), Groups.Num(), 2)) { return false; }
+    for (const auto& Group : Groups)
+    {
+        TestTrue(TEXT("缺来源候选不使分组全选可用"), Group->Children.Num() == 3 && Group->SelectableCount == 0);
+    }
+    const auto Plan = BuildReimportPlan(Result.Rows);
+    TestTrue(TEXT("缺槽位候选不进入预检加载清单"), Plan->Items.IsEmpty());
+    FReimportQueue Queue;
+    Queue.Start(Result.Rows, Plan);
+    TestFalse(TEXT("缺槽位候选不能启动更新队列"), Queue.IsRunning());
+    Settings.bMatchKeyword = false;
+    const FSearchOutput PathOnly = Match(Index, Files, Settings, {}, Cancel);
+    TestTrue(TEXT("关闭关键词后所有未知来源仅参与范围诊断"), PathOnly.Rows.IsEmpty() && PathOnly.UnmatchedUnknownCount == 4);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FImportAssistantMetadataTest, "ImportAssistant.Matching.Metadata", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FImportAssistantMetadataTest::RunTest(const FString&)
 {
@@ -161,15 +264,15 @@ public:
         FARFilter Filter;
         Filter.PackagePaths.Add(FName(TEXT("/Game")));
         Filter.bRecursivePaths = true;
-        Filter.ClassPaths.Add(UAnimSequence::StaticClass()->GetClassPathName());
+        Filter.ClassPaths = GetSupportedAssetClasses();
         TArray<FAssetData> Expected;
         FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get().GetAssets(Filter, Expected);
         const auto Snapshot = Index.Snapshot();
         TSet<FSoftObjectPath> Indexed;
         for (const FRecordPtr& Record : Snapshot->Records) { Indexed.Add(Record->ObjectPath); }
         Test->TestEqual(TEXT("只读索引数量与主线程注册表基准一致"), Indexed.Num(), Expected.Num());
-        for (const FAssetData& Data : Expected) { Test->TestTrue(TEXT("基准动画没有漏检：") + Data.AssetName.ToString(), Indexed.Contains(Data.GetSoftObjectPath())); }
-        Test->AddInfo(FString::Printf(TEXT("只读索引 %d 个动画，等待与构建合计 %.3f 秒（含资产发现，不是热查询性能）"),
+        for (const FAssetData& Data : Expected) { Test->TestTrue(TEXT("基准 FBX 资产没有漏检：") + Data.AssetName.ToString(), Indexed.Contains(Data.GetSoftObjectPath())); }
+        Test->AddInfo(FString::Printf(TEXT("只读索引 %d 个三类资产，等待与构建合计 %.3f 秒（含资产发现，不是热查询性能）"),
             Indexed.Num(), FPlatformTime::Seconds() - Start));
         return true;
     }
@@ -322,8 +425,8 @@ bool FImportAssistantGroupingTest::RunTest(const FString&)
         Rows.Add(Row);
     }
     const auto Groups = BuildResultGroups(Files, Rows, false);
-    TestEqual(TEXT("三个 FBX 加一个未知来源组"), Groups.Num(), 4);
-    if (Groups.Num() != 4) { return false; }
+    TestEqual(TEXT("只保留三个输入 FBX 的分组"), Groups.Num(), 3);
+    if (Groups.Num() != 3) { return false; }
     TestEqual(TEXT("遵循添加顺序而非路径字典顺序"), Groups[0]->File, Files[0]);
     TestEqual(TEXT("同名不同目录分为独立组"), Groups[1]->File, Files[1]);
     TestEqual(TEXT("组标题不含扩展名"), Groups[0]->Title, FString(TEXT("Run")));
@@ -335,7 +438,7 @@ bool FImportAssistantGroupingTest::RunTest(const FString&)
     TestEqual(TEXT("零匹配组仍保留原文件标题"), Groups[2]->Title, FString(TEXT("Stop")));
     TestTrue(TEXT("零匹配占位行封闭小组底边"), Groups[2]->Children[0]->bLastInGroup);
     for (const FResultNodePtr& Group : Groups) { TestTrue(TEXT("每组末尾标识用于完整边框"), Group->Children.Last()->bLastInGroup); }
-    TestTrue(TEXT("未知来源不强行归入 FBX"), Groups[3]->File.IsEmpty() && Groups[3]->Children[0]->Row == Rows[2]);
+    TestFalse(TEXT("没有对应 FBX 的诊断记录不创建额外分组"), Groups.ContainsByPredicate([](const FResultNodePtr& Group) { return Group->File.IsEmpty(); }));
     const auto Pending = BuildResultGroups(Files, {}, true);
     TestEqual(TEXT("未完成检索不能误报零匹配"), Pending[0]->Children[0]->Title, FString(TEXT("等待检索完成…")));
     return true;
@@ -424,8 +527,9 @@ bool FImportAssistantPathDetailsTest::RunTest(const FString&)
     Unknown->ObjectPath = FSoftObjectPath(TEXT("/Game/Details/Unknown.Unknown"));
     Index.UnknownRecords.Add(Unknown);
     const FSearchOutput UnknownResult = Match(Index, {TEXT("C:/Missing.fbx")}, Settings, {}, Cancel);
-    if (!TestEqual(TEXT("未知来源行仍被显示"), UnknownResult.Rows.Num(), 1)) { return false; }
-    TestEqual(TEXT("未知来源 Tooltip 说明而非虚构匹配"), UnknownResult.Rows[0]->ReasonTooltip, UnknownResult.Rows[0]->Status);
+    TestTrue(TEXT("无关未知来源不再创建匹配行或虚构 Tooltip"), UnknownResult.Rows.IsEmpty());
+    TestEqual(TEXT("未知来源仍保留范围诊断"), UnknownResult.UnmatchedUnknownCount, 1);
+    TestEqual(TEXT("没有依据时不把来源状态当作匹配依据"), DescribeReason(EMatchReason::None), FString(TEXT("无匹配依据")));
     return true;
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FImportAssistantColumnConfigTest, "ImportAssistant.Settings.ColumnVisibilityConfig",

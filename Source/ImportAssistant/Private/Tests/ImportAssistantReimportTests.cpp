@@ -310,7 +310,7 @@ bool FImportAssistantRiskWarningTest::RunTest(const FString&)
     Fixture.Skeleton->GetPackage()->SetDirtyFlag(false);
     Fixture.Rows[0]->File = Fixture.Source + TEXT(".replacement.fbx");
     Plan = BuildReimportPlan(Fixture.Rows);
-    TestTrue(TEXT("仅来源改绑也触发提示"), BuildReimportWarning(*Plan).Contains(TEXT("来源改绑（1 项）")));
+    TestTrue(TEXT("仅来源改绑也触发提示"), BuildReimportWarning(*Plan).Contains(TEXT("来源改绑或分项内容更新（1 项）")));
     Fixture.Rows[0]->bSelected = false;
     Fixture.Animations[0]->MarkPackageDirty();
     Plan = BuildReimportPlan(Fixture.Rows);
@@ -372,7 +372,7 @@ bool FImportAssistantSourceRebindTest::RunTest(const FString&)
     Fixture.Animations[0]->MarkPackageDirty();
     const auto Plan = BuildReimportPlan(Fixture.Rows);
     TestTrue(TEXT("同时记录改绑和脏动画风险"), BuildReimportWarning(*Plan).Contains(TEXT("来源改绑")) &&
-        Plan->Items.FindChecked(Fixture.Rows[0]->Asset->ObjectPath).Dirty.bAnimationDirty);
+        Plan->Items.FindChecked(Fixture.Rows[0]->Asset->ObjectPath).Dirty.bAssetDirty);
     Fixture.Queue.Start(Fixture.Rows, Plan);
     for (int32 Step = 0; Step < 6 && Fixture.Queue.IsRunning(); ++Step) { Fixture.Queue.Tick(); }
     TestEqual(TEXT("已确认脏动画的已有值确实被原生处理器覆盖"), Fixture.Animations[0]->RateScale, 2.0f);

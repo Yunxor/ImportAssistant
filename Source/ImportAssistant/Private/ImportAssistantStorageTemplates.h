@@ -8,8 +8,8 @@ UENUM()
 enum class EImportAssistantAssetCategory : uint8
 {
     Animation UMETA(DisplayName = "动画序列"),
-    SkeletalMesh UMETA(DisplayName = "骨骼模型（预留）"),
-    StaticMesh UMETA(DisplayName = "静态模型（预留）")
+    SkeletalMesh UMETA(DisplayName = "骨骼模型"),
+    StaticMesh UMETA(DisplayName = "静态模型")
 };
 
 UENUM()
@@ -66,6 +66,9 @@ struct FImportAssistantStorageTemplate
 
 namespace ImportAssistant
 {
+bool BuildMultiTypeStoragePlan(const TArray<FImportAssistantStorageTemplate>& Templates, bool bEnabled,
+    EImportAssistantStorageSearchMode Mode, const TArray<EImportAssistantAssetCategory>& Categories, const TArray<FString>& Files,
+    const TArray<FName>& BaseRoots, bool bRecursive, TArray<FFileSearchScope>& OutScopes, TArray<FName>& OutIndexRoots, FString& OutError);
 bool IsDirectoryInRoots(const FString& Directory, const TArray<FString>& Roots, bool bRecursive);
 void CompactStorageRoots(TArray<FString>& Roots, bool bRecursive);
 bool BuildStorageSearchPlan(const TArray<FImportAssistantStorageTemplate>& Templates, bool bEnabled,

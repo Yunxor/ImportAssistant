@@ -28,12 +28,9 @@ public:
 
 private:
 #if WITH_DEV_AUTOMATION_TESTS
-    friend class FImportAssistantUpdateControlTest;
     friend class FImportAssistantSelectionCommand;
-    friend class FImportAssistantColumnVisibilityTest;
     friend class FImportAssistantAutoReimportRefreshTest;
     friend class FImportAssistantVersionRefreshTest;
-    friend class FImportAssistantColumnTooltipTest;
 #endif
     void AddFiles(const TArray<FString>& Added);
     FReply Browse();
@@ -96,6 +93,7 @@ private:
     bool bCheckTemplateDirectories = false;
     TArray<ImportAssistant::FPathMapping> Mappings;
     TArray<FName> ActiveRoots;
+    TArray<FTopLevelAssetPath> ActiveClasses;
     bool bActiveRecursive = true;
     TArray<ImportAssistant::FRowPtr> Rows;
     TArray<ImportAssistant::FResultNodePtr> Groups;
@@ -114,7 +112,7 @@ private:
     int32 SelectableCount = 0;
     TMap<FString, ImportAssistant::FResultNodePtr> SelectionGroups;
     TMap<FSoftObjectPath, ImportAssistant::FRowPtr> SelectedAssets;
-    int32 UnknownCount = 0;
+    int32 UnmatchedUnknownCount = 0;
     TArray<FString> UnmatchedFiles;
     double SearchSeconds = 0;
 };

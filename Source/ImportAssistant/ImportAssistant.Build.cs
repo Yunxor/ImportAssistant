@@ -8,8 +8,13 @@ public class ImportAssistant : ModuleRules
         PrivateDependencyModuleNames.AddRange(new[]
         {
             "Core", "CoreUObject", "Engine", "UnrealEd", "Slate", "SlateCore", "ToolMenus", "AssetRegistry",
-            "ContentBrowser", "DesktopPlatform", "ApplicationCore", "InputCore", "InterchangeCore", "InterchangeEngine", "PropertyEditor", "Projects", "AssetDefinition", "DirectoryWatcher"
+            "ContentBrowser", "DesktopPlatform", "ApplicationCore", "InputCore", "InterchangeCore", "InterchangeEngine", "PropertyEditor", "Projects", "AssetDefinition",
+            "DirectoryWatcher", "Json"
         });
+        if (Target.bBuildDeveloperTools)
+        {
+            PrivateDependencyModuleNames.AddRange(new[] { "RenderCore", "RHI", "MeshDescription", "StaticMeshDescription", "SkeletalMeshDescription", "AnimationCore" });
+        }
     }
 }
 

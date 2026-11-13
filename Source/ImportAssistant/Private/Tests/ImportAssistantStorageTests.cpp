@@ -146,7 +146,7 @@ bool FStorageScopeTest::RunTest(const FString&)
     TestTrue(TEXT("补查资产独立标记且仍能勾选"), Outside && (*Outside)->bOutsideTemplate && (*Outside)->CanSelect());
     const FRowPtr* Leak = Result.Rows.FindByPredicate([](const FRowPtr& Row) { return Row->Asset->Name == TEXT("MaleCopy"); });
     TestTrue(TEXT("不串用另一个 FBX 的模板目录"), Leak == nullptr);
-    TestEqual(TEXT("范围外未知资产不计入未知数"), Result.UnknownCount, 0);
+    TestEqual(TEXT("范围外未知资产不计入未知数"), Result.UnmatchedUnknownCount, 0);
     const auto Groups = BuildResultGroups(Files, Result.Rows, false, Scopes);
     TestEqual(TEXT("输入顺序保留"), Groups[0]->File, Files[0]);
     TestTrue(TEXT("组内优先展示模板目录资产"), !Groups[0]->Children[0]->Row->bOutsideTemplate);

@@ -13,7 +13,8 @@ enum class ESelectionScenario : uint8
     TriState,
     Conflicts,
     Availability,
-    Report
+    Report,
+    Diagnostics
 };
 
 class FImportAssistantSelectionCommand : public IAutomationLatentCommand
@@ -45,6 +46,7 @@ public:
         case ESelectionScenario::Conflicts: RunConflicts(); break;
         case ESelectionScenario::Availability: RunAvailability(); break;
         case ESelectionScenario::Report: RunReport(); break;
+        case ESelectionScenario::Diagnostics: RunDiagnostics(); break;
         }
         return true;
     }
@@ -152,6 +154,41 @@ private:
             Test->TestTrue(TEXT("复选框处理鼠标按下，不向组行传播折叠事件"), ClickBox->OnMouseButtonDown(
                 FGeometry::MakeRoot(FVector2f(20, 20), FSlateLayoutTransform()), Mouse).IsEventHandled());
         }
+    }
+
+    void RunDiagnostics()
+    {
+        Window->Files = {TEXT("C:/Diagnostics/Hero_Run.fbx"), TEXT("C:/Diagnostics/Hero_Walk.fbx"), TEXT("C:/Diagnostics/Empty.fbx")};
+        FSearchSnapshot Snapshot;
+        for (const FString& Name : {FString(TEXT("Hero_Run_Candidate")), FString(TEXT("Unrelated"))})
+        {
+            auto Asset = MakeShared<FAssetRecord, ESPMode::ThreadSafe>();
+            Asset->Name = Name;
+            Asset->AssetClassPath = FTopLevelAssetPath(TEXT("/Script/Engine.SkeletalMesh"));
+            Asset->PackageName = TEXT("/Game/__Diagnostics/") + Name;
+            Asset->ObjectPath = FSoftObjectPath(Asset->PackageName + TEXT(".") + Name);
+            Snapshot.Records.Add(Asset);
+            Snapshot.UnknownRecords.Add(Asset);
+        }
+        FMatchSettings Settings;
+        Settings.bMatchKeyword = true;
+        std::atomic_bool Cancel(false);
+        const FSearchOutput Output = Match(Snapshot, Window->Files, Settings, {}, Cancel);
+        Window->Rows = Output.Rows;
+        Window->UnmatchedFiles = Output.UnmatchedFiles;
+        Window->UnmatchedUnknownCount = Output.UnmatchedUnknownCount;
+        Window->RebuildGroups(false);
+        if (!Test->TestEqual(TEXT("实际窗口只接收关键词命中的来源未知候选"), Window->Rows.Num(), 1)) { return; }
+        Test->TestEqual(TEXT("窗口不建立来源未知额外组"), Window->Groups.Num(), Window->Files.Num());
+        Test->TestTrue(TEXT("候选归入实际命中的 FBX"), Window->Groups[0]->Children[0]->Row == Window->Rows[0]);
+        const FString Status = Window->StatusText().ToString();
+        Test->TestTrue(TEXT("状态栏匹配数量排除范围诊断"), Status.Contains(TEXT("匹配结果 1 行")));
+        Test->TestTrue(TEXT("独立提示无关未知来源的数量及边界"), Status.Contains(TEXT("另有 1 个资产缺少可用来源记录")) &&
+            Status.Contains(TEXT("未确认与本次 FBX 有关；不计入匹配结果")));
+        HeaderCheckBox()->ToggleCheckedState();
+        Test->TestTrue(TEXT("表头全选不能选中缺来源槽位候选"), Window->SelectedCount == 0 && !Window->Rows[0]->bSelected);
+        Window->UnmatchedUnknownCount = 0;
+        Test->TestFalse(TEXT("没有额外未知来源时不保留旧提示"), Window->StatusText().ToString().Contains(TEXT("另有")));
     }
 
     void RunConflicts()
@@ -340,6 +377,15 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FImportAssistantSelectionReportTest, "ImportAss
 bool FImportAssistantSelectionReportTest::RunTest(const FString&)
 {
     FAutomationTestFramework::Get().EnqueueLatentCommand(MakeShared<FImportAssistantSelectionCommand>(this, ESelectionScenario::Report));
+    return true;
+}
+
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FImportAssistantUnknownDiagnosticsTest, "ImportAssistant.Editor.UnknownSourceDiagnostics",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FImportAssistantUnknownDiagnosticsTest::RunTest(const FString&)
+{
+    FAutomationTestFramework::Get().EnqueueLatentCommand(MakeShared<FImportAssistantSelectionCommand>(this, ESelectionScenario::Diagnostics));
     return true;
 }
 #endif

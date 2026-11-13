@@ -1,6 +1,7 @@
 #include "SImportAssistantWindow.h"
 
 #include "Async/Async.h"
+#include "ImportAssistantAssetAccess.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Brushes/SlateNoResource.h"
 #include "Rendering/DrawElements.h"
@@ -55,8 +56,8 @@ const FOptionalResultColumn OptionalResultColumns[] =
     {TEXT("AutoReimport"), TEXT("自动重导入"), TEXT("按当前活动目录、过滤规则及资产真实来源关联评估 UE 原生自动重导入条件；不要求 .uasset 目录受监控。")
         TEXT("\n已启用不表示正在更新或更新成功；需确认模式不是静默执行，原生流程可能独立保存。关键词和插件路径映射不建立原生来源关联。")
         TEXT("\nUE 不公开实际运行时过滤规则及重置完成信号，繁忙或第三方同目录覆盖时需核实。单元格提示展示当前设置、监控范围及关联依据。"), 0.13f},
-    {TEXT("Dirty"), TEXT("是否脏数据"), TEXT("动画或关联 Skeleton 所在包是否存在 UE 未保存修改，不表示数据损坏。单元格提示列出具体脏资产。")
-        TEXT("\n列表检查不加载资产；执行前会加载所选动画准确复核，确认后允许覆盖已有修改但不自动保存。"), 0.12f},
+    {TEXT("Dirty"), TEXT("是否脏数据"), TEXT("资产或直接关联依赖所在包是否存在 UE 未保存修改，不表示数据损坏。单元格提示列出具体脏资产。")
+        TEXT("\n列表检查不加载资产；执行前会加载所选资产准确复核，确认后允许覆盖已有修改但不自动保存。"), 0.12f},
     {TEXT("VersionTime"), TEXT("版本时间"), TEXT("上次导入时记录的源 FBX 修改时间（UTC），不是重导入操作时间，也不是 uasset 保存时间。")
         TEXT("\n只读取资产导入元数据，不用当前磁盘源文件时间代替。未保存资产显示当前内存导入记录。")
         TEXT("\n按本行来源槽位显示；单元格提示列出各来源路径与时间，缺失记录显示未知。"), 0.16f},
@@ -176,7 +177,7 @@ public:
         else if (Column == TEXT("Asset"))
         {
             CellContent = SNew(SButton).HAlign(HAlign_Fill).ButtonColorAndOpacity(Presentation.Color)
-                .ToolTipText(FText::FromString(Item->Asset->ObjectPath.ToString() + TEXT("\nSkeleton：") + Item->Asset->Skeleton))
+                .ToolTipText(FText::FromString(Item->Asset->ObjectPath.ToString() + (Item->Asset->Skeleton.IsEmpty() ? FString() : TEXT("\nSkeleton：") + Item->Asset->Skeleton)))
                 .OnClicked_Lambda([this]
                 {
                     const FAssetData Asset = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get()
@@ -253,7 +254,7 @@ void SImportAssistantWindow::Construct(const FArguments& Args)
         + SHeaderRow::Column(TEXT("Select")).FixedWidth(32).ShouldGenerateWidget(true).HAlignHeader(HAlign_Center).VAlignHeader(VAlign_Center)
             [CreateSelectionCheckBox()]
         + SHeaderRow::Column(TEXT("Asset")).DefaultLabel(FText::FromString(TEXT("资产（点击定位）"))).FillWidth(0.15f).ShouldGenerateWidget(true)
-            .DefaultTooltip(FText::FromString(TEXT("匹配的动画资产名称，点击可在内容浏览器中定位。单元格提示显示资产对象路径及关联 Skeleton。")));
+            .DefaultTooltip(FText::FromString(TEXT("匹配的 FBX 资产名称，点击可在内容浏览器中定位。单元格提示显示资产对象路径及适用的关联 Skeleton。")));
     for (const FOptionalResultColumn& Column : OptionalResultColumns)
     {
         ResultHeader->AddColumn(SHeaderRow::Column(Column.Id).DefaultLabel(FText::FromString(Column.Label))
@@ -280,7 +281,7 @@ void SImportAssistantWindow::Construct(const FArguments& Args)
         [
             SNew(SVerticalBox)
             + SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
-            [SNew(STextBlock).Text(FText::FromString(TEXT("Import Assistant — 拖入 FBX，审阅同源动画后再更新")))]
+            [SNew(STextBlock).Text(FText::FromString(TEXT("Import Assistant — 拖入 FBX，审阅同源资产后再更新")))]
             + SVerticalBox::Slot().FillHeight(1)
             [
                 SNew(SSplitter)
@@ -306,7 +307,7 @@ void SImportAssistantWindow::Construct(const FArguments& Args)
                         + SWrapBox::Slot()
                         [SNew(SButton).Text(FText::FromString(TEXT("清空本次文件"))).IsEnabled_Lambda(Editable).OnClicked_Lambda([this]
                             {
-                                Files.Reset(); AutoReimportFiles.Reset(); FileScopes.Reset(); Rows.Reset(); SelectedCount = 0; UnknownCount = 0; UnmatchedFiles.Reset();
+                                Files.Reset(); AutoReimportFiles.Reset(); FileScopes.Reset(); Rows.Reset(); SelectedCount = 0; UnmatchedUnknownCount = 0; UnmatchedFiles.Reset();
                                 UpdateAutoReimportRows();
                                 RebuildGroups(false); SettingsChanged(); return FReply::Handled();
                             })]
@@ -388,11 +389,11 @@ void SImportAssistantWindow::Construct(const FArguments& Args)
                         [SNew(STextBlock).Text(this, &SImportAssistantWindow::StatusText).AutoWrapText(true)]
                         + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Top)
                         [SNew(SButton).Tag(TEXT("ImportAssistant.ExportReport")).Text(FText::FromString(TEXT("导出报告…")))
-                            .ToolTipText(FText::FromString(TEXT("导出当前检索和更新结果，不更新或保存动画资产。")))
+                            .ToolTipText(FText::FromString(TEXT("导出当前检索和更新结果，不更新或保存资产。")))
                             .IsEnabled_Lambda(Editable).OnClicked(this, &SImportAssistantWindow::Export)]
                     ]
                     + SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
-                    [SNew(STextBlock).Text(FText::FromString(TEXT("更新仅修改内存，不自动保存或签出。请检查动画及 Skeleton 后自行保存；来源改绑或覆盖未保存修改时会提示确认。请避免同时开启自动重导入。")))
+                    [SNew(STextBlock).Text(FText::FromString(TEXT("更新仅修改内存，不自动保存或签出。请检查资产及相关依赖后自行保存；来源改绑或覆盖未保存修改时会提示确认。请避免同时开启自动重导入。")))
                         .AutoWrapText(true)]
                 ]
             ]
@@ -504,7 +505,7 @@ FReply SImportAssistantWindow::Browse()
     TArray<FString> Selected;
     if (IDesktopPlatform* Platform = FDesktopPlatformModule::Get())
     {
-        if (Platform->OpenFileDialog(FSlateApplication::Get().FindBestParentWindowHandleForDialogs(AsShared()), TEXT("选择动画 FBX"),
+        if (Platform->OpenFileDialog(FSlateApplication::Get().FindBestParentWindowHandleForDialogs(AsShared()), TEXT("选择 FBX 源文件"),
             TEXT(""), TEXT(""), TEXT("FBX (*.fbx)|*.fbx"), EFileDialogFlags::Multiple, Selected)) { AddFiles(Selected); }
     }
     return FReply::Handled();
@@ -519,8 +520,8 @@ FReply SImportAssistantWindow::Search()
     SaveSettings();
     TArray<FFileSearchScope> NewScopes;
     TArray<FName> IndexRoots;
-    if (!BuildStorageSearchPlan(Settings->StorageTemplates, Settings->bUseStorageTemplates, Settings->StorageSearchMode,
-        EImportAssistantAssetCategory::Animation, Files, Roots, Settings->bRecursive, NewScopes, IndexRoots, Notice))
+    if (!BuildMultiTypeStoragePlan(Settings->StorageTemplates, Settings->bUseStorageTemplates, Settings->StorageSearchMode,
+        Settings->GetAssetCategories(), Files, Roots, Settings->bRecursive, NewScopes, IndexRoots, Notice))
     {
         bSettingsDirty = true;
         return FReply::Handled();
@@ -529,18 +530,20 @@ FReply SImportAssistantWindow::Search()
     RefreshAutoReimport(true);
     bCheckTemplateDirectories = true;
     RebuildGroups(true);
-    if (IndexRoots != ActiveRoots || Settings->bRecursive != bActiveRecursive)
+    const auto Classes = Settings->GetAssetClasses();
+    if (IndexRoots != ActiveRoots || Classes != ActiveClasses || Settings->bRecursive != bActiveRecursive)
     {
         ActiveRoots = IndexRoots;
         bActiveRecursive = Settings->bRecursive;
-        Index->Configure(IndexRoots, Settings->bRecursive);
+        ActiveClasses = Classes;
+        Index->Configure(IndexRoots, Settings->bRecursive, Classes);
     }
     else { Index->RefreshMemory(); }
     Mappings = MoveTemp(ParsedMappings);
     bSettingsDirty = false;
     bShowReport = false;
     bSearchRequested = true;
-    Notice = Files.IsEmpty() ? TEXT("请拖入或添加 FBX；未知来源将在检索结果中单独列出。") : TEXT("");
+    Notice = Files.IsEmpty() ? TEXT("请拖入或添加 FBX；结果仅列出实际命中的资产。") : TEXT("");
     return FReply::Handled();
 }
 
@@ -581,7 +584,7 @@ void SImportAssistantWindow::Tick(const FGeometry& Geometry, double Time, float 
                 const FString* OldJson = Selected.Find(Row->Key());
                 if (OldJson && *OldJson == Row->Asset->SourceJson && Row->CanSelect() && !Row->bFileConflict) { SetSelected(Row, true); }
             }
-            UnknownCount = Output.UnknownCount;
+            UnmatchedUnknownCount = Output.UnmatchedUnknownCount;
             SearchSeconds = Output.Seconds;
             ResultRevision = TaskRevision;
             bSearchRequested = false;
@@ -883,8 +886,11 @@ FText SImportAssistantWindow::StatusText() const
     {
         Text += TEXT("；仅模板目录模式：相关 FBX 未检查模板目录外资产");
     }
-    Text += FString::Printf(TEXT("\n结果 %d 行，已选择 %d；未知来源 %d；上次匹配 %.3f 秒。%s"),
-        Rows.Num(), SelectedCount, UnknownCount, SearchSeconds, *Notice);
+    Text += FString::Printf(TEXT("\n匹配结果 %d 行，已选择 %d；上次匹配 %.3f 秒。%s"), Rows.Num(), SelectedCount, SearchSeconds, *Notice);
+    if (UnmatchedUnknownCount > 0)
+    {
+        Text += FString::Printf(TEXT("\n检索范围内另有 %d 个资产缺少可用来源记录，未确认与本次 FBX 有关；不计入匹配结果。"), UnmatchedUnknownCount);
+    }
     if (!UnmatchedFiles.IsEmpty()) { Text += TEXT("\n未找到匹配：") + FString::Join(UnmatchedFiles, TEXT("；")); }
     return FText::FromString(Text);
 }
@@ -976,435 +982,28 @@ FReply SImportAssistantWindow::Export()
         return TEXT("\"") + Value + TEXT("\"");
     };
     TMap<FString, FString> ScopeReports;
-    for (const FFileSearchScope& Scope : FileScopes) { ScopeReports.Add(NormalizePath(Scope.File), Scope.Details); }
-    FString Csv = TEXT("FBX,资产,原来源,匹配依据,已选择,状态,目录规范,模板解析与检索范围,自动重导入,自动重导入详情,是否脏数据,脏数据详情,版本时间,版本时间详情\r\n");
+    for (const FFileSearchScope& Scope : FileScopes)
+    {
+        FString& Details = ScopeReports.FindOrAdd(NormalizePath(Scope.File));
+        if (!Details.IsEmpty()) { Details += TEXT("\n\n"); }
+        Details += Scope.Details;
+    }
+    FString Csv = TEXT("FBX,资产,原来源,匹配依据,已选择,状态,目录规范,模板解析与检索范围,自动重导入,自动重导入详情,是否脏数据,脏数据详情,版本时间,版本时间详情,资产类型,来源槽位内容\r\n");
     for (const FRowPtr& Row : Rows)
     {
         TArray<FString> Sources;
         for (const FSourceRecord& Source : Row->Asset->Sources) { Sources.Add(Source.Original); }
         Csv += FString::Join(TArray<FString>{ Cell(Row->File), Cell(Row->Asset->ObjectPath.ToString()), Cell(FString::Join(Sources, TEXT(" | "))),
             Cell(DescribeReason(Row->Reason)), Cell(Row->bSelected ? TEXT("是") : TEXT("否")), Cell(Row->Status), Cell(Row->bOutsideTemplate ? TEXT("模板目录外候选") : TEXT("")),
-            Cell(ScopeReports.FindRef(NormalizePath(Row->File))), Cell(Row->AutoReimport.Label), Cell(Row->AutoReimport.Tooltip), Cell(Row->Dirty.Label), Cell(Row->Dirty.Tooltip), Cell(Row->VersionTime.Label), Cell(Row->VersionTime.Tooltip) }, TEXT(",")) + TEXT("\r\n");
+            Cell(ScopeReports.FindRef(NormalizePath(Row->File))), Cell(Row->AutoReimport.Label), Cell(Row->AutoReimport.Tooltip), Cell(Row->Dirty.Label), Cell(Row->Dirty.Tooltip), Cell(Row->VersionTime.Label), Cell(Row->VersionTime.Tooltip), Cell(Row->Asset->AssetClassPath.ToString()),
+            Cell(DescribeSourceSlot(Row->Asset->AssetClassPath, Row->SourceIndex)) }, TEXT(",")) + TEXT("\r\n");
     }
     for (const FString& File : UnmatchedFiles)
     {
         Csv += Cell(File) + TEXT(",\"\",\"\",\"\",\"否\",\"指定范围内未找到匹配\",\"\",") +
             Cell(ScopeReports.FindRef(NormalizePath(File))) + TEXT(",") + Cell(AutoReimportFiles.FindRef(NormalizePath(File)).Label) +
-            TEXT(",") + Cell(AutoReimportFiles.FindRef(NormalizePath(File)).Tooltip) + TEXT(",\"\",\"无匹配资产\",\"\",\"无匹配资产\"\r\n");
+            TEXT(",") + Cell(AutoReimportFiles.FindRef(NormalizePath(File)).Tooltip) + TEXT(",\"\",\"无匹配资产\",\"\",\"无匹配资产\",\"\",\"\"\r\n");
     }
     Notice = FFileHelper::SaveStringToFile(Csv, *Paths[0], FFileHelper::EEncodingOptions::ForceUTF8) ? TEXT("报告已导出：") + Paths[0] : TEXT("报告写入失败");
     return FReply::Handled();
 }
-
-
-
-
-
-
-
-
-
-
-
-
-#if WITH_DEV_AUTOMATION_TESTS
-#include "Framework/MultiBox/MultiBox.h"
-#include "Layout/ArrangedChildren.h"
-#include "Misc/AutomationTest.h"
-#include "Widgets/SToolTip.h"
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FImportAssistantCellLayoutTest, "ImportAssistant.Editor.CellSpacingAndTooltip",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-bool FImportAssistantCellLayoutTest::RunTest(const FString&)
-{
-    auto Asset = MakeShared<FAssetRecord, ESPMode::ThreadSafe>();
-    Asset->Name = TEXT("M_Neutral_Run_Loop_WithALongName");
-    Asset->AssetClassPath = FTopLevelAssetPath(TEXT("/Script/Engine.AnimSequence"));
-    Asset->PackageName = TEXT("/Game/Characters/UEFN_Mannequin/Animations/LongPath/Run");
-    Asset->Sources.Add({ TEXT("D:/Source/Characters/UEFN_Mannequin/Animations/LongPath/Run.fbx"), {} });
-    FRowPtr Item = MakeShared<FMatchRow>();
-    Item->Asset = Asset;
-    Item->Reason = EMatchReason::Keyword;
-    Item->ReasonTooltip = TEXT("名称关键词匹配：任意关键词\n命中关键词：Run、Loop\n匹配对象：M_Neutral_Run_Loop_WithALongName");
-    Item->Status = TEXT("未选择");
-    Item->AutoReimport = {EAutoReimportState::Enabled, TEXT("已启用（需确认）"), TEXT("来源关联受监控 FBX；包含：*.fbx"), true};
-    TArray<FResultNodePtr> Nodes;
-    const TSharedRef<STreeView<FResultNodePtr>> Owner = SNew(STreeView<FResultNodePtr>).TreeItemsSource(&Nodes)
-        .OnGenerateRow_Lambda([](FResultNodePtr, const TSharedRef<STableViewBase>& Table) -> TSharedRef<ITableRow>
-            { return SNew(STableRow<FResultNodePtr>, Table); })
-        .OnGetChildren_Lambda([](FResultNodePtr, TArray<FResultNodePtr>&) {})
-        .HeaderRow(SNew(SHeaderRow) + SHeaderRow::Column(TEXT("Path")).DefaultLabel(FText::FromString(TEXT("资产路径"))));
-    FAssetPresentationCache Cache;
-    const TSharedRef<SImportAssistantRow> Row = SNew(SImportAssistantRow, Owner).Item(Item).Presentation(Cache.Get(Asset->AssetClassPath)).Select([](bool) {}).CanEdit([] { return true; });
-    for (const FName Column : {FName(TEXT("Select")), FName(TEXT("Asset")), FName(TEXT("Type")), FName(TEXT("Path")), FName(TEXT("Source")),
-        FName(TEXT("Reason")), FName(TEXT("AutoReimport")), FName(TEXT("Dirty")), FName(TEXT("VersionTime")), FName(TEXT("State"))})
-    {
-        const TSharedRef<SWidget> Cell = Row->GenerateWidgetForColumn(Column);
-        Cell->SlatePrepass();
-        const TSharedRef<SWidget> ClipBox = Cell->GetChildren()->GetChildAt(0);
-        const FVector2D CellSize = Cell->GetDesiredSize();
-        const FVector2D InnerSize = ClipBox->GetDesiredSize();
-        TestEqual(TEXT("单元格左右合计留白：") + Column.ToString(), float(CellSize.X - InnerSize.X), 12.0f);
-        TestEqual(TEXT("单元格上下合计留白：") + Column.ToString(), float(CellSize.Y - InnerSize.Y), 6.0f);
-        TestEqual(TEXT("内容独立裁剪以保护留白"), ClipBox->GetClipping(), EWidgetClipping::ClipToBounds);
-        FArrangedChildren Arranged(EVisibility::Visible);
-        Cell->ArrangeChildren(FGeometry::MakeRoot(FVector2f(160, float(CellSize.Y)), FSlateLayoutTransform()), Arranged);
-        if (TestEqual(TEXT("单元格布局只包含内层内容"), Arranged.Num(), 1))
-        {
-            TestEqual(TEXT("受限列宽保留两侧留白"), float(Arranged[0].Geometry.GetLocalSize().X), 148.0f);
-        }
-        if (Column == TEXT("Type"))
-        {
-            const TSharedRef<SWidget> Label = ClipBox->GetChildren()->GetChildAt(0);
-            const TSharedPtr<IToolTip> Tooltip = Label->GetToolTip();
-            if (TestTrue(TEXT("类型列有文件格式 Tooltip"), Tooltip.IsValid()))
-            {
-                const FString Text = StaticCastSharedRef<SToolTip>(Tooltip->AsWidget())->GetTextTooltip().ToString();
-                TestTrue(TEXT("类型列包含实际资产类和源扩展名"), Text.Contains(TEXT("AnimSequence")) && Text.Contains(TEXT(".uasset")) && Text.Contains(TEXT(".fbx")));
-            }
-        }
-        if (Column == TEXT("AutoReimport"))
-        {
-            const TSharedRef<STextBlock> Label = StaticCastSharedRef<STextBlock>(ClipBox->GetChildren()->GetChildAt(0));
-            TestEqual(TEXT("自动重导入列显示独立状态"), Label->GetText().ToString(), Item->AutoReimport.Label);
-            const TSharedPtr<IToolTip> Tooltip = Label->GetToolTip();
-            if (TestTrue(TEXT("自动重导入列有范围与来源 Tooltip"), Tooltip.IsValid()))
-            {
-                TestEqual(TEXT("Tooltip 绑定当前监控依据"),
-                    StaticCastSharedRef<SToolTip>(Tooltip->AsWidget())->GetTextTooltip().ToString(), Item->AutoReimport.Tooltip);
-                Item->AutoReimport.Label = TEXT("无法确认");
-                Item->AutoReimport.Tooltip = TEXT("监控配置刚变更，等待刷新");
-                TestEqual(TEXT("状态文本动态读取而非构造时快照"), Label->GetText().ToString(), Item->AutoReimport.Label);
-                TestEqual(TEXT("Tooltip 跟随配置刷新"),
-                    StaticCastSharedRef<SToolTip>(Tooltip->AsWidget())->GetTextTooltip().ToString(), Item->AutoReimport.Tooltip);
-            }
-        }
-        if (Column == TEXT("VersionTime"))
-        {
-            const TSharedRef<STextBlock> Label = StaticCastSharedRef<STextBlock>(ClipBox->GetChildren()->GetChildAt(0));
-            TestEqual(TEXT("版本时间列读取缓存"), Label->GetText().ToString(), Item->VersionTime.Label);
-            const auto Tooltip = Label->GetToolTip();
-            if (TestTrue(TEXT("版本列提供语义和来源 Tooltip"), Tooltip.IsValid()))
-            {
-                Item->VersionTime.Label = TEXT("2026-11-09 02:03:04 UTC");
-                Item->VersionTime.Tooltip = TEXT("上次导入时记录的 FBX 时间，非操作时间");
-                TestEqual(TEXT("版本时间动态读取"), Label->GetText().ToString(), Item->VersionTime.Label);
-                TestEqual(TEXT("版本详情动态刷新"), StaticCastSharedRef<SToolTip>(Tooltip->AsWidget())->GetTextTooltip().ToString(), Item->VersionTime.Tooltip);
-            }
-        }
-        if (Column == TEXT("Dirty"))
-        {
-            const TSharedRef<STextBlock> Label = StaticCastSharedRef<STextBlock>(ClipBox->GetChildren()->GetChildAt(0));
-            TestEqual(TEXT("脏数据列读取值缓存"), Label->GetText().ToString(), Item->Dirty.Label);
-            const auto Tooltip = Label->GetToolTip();
-            if (TestTrue(TEXT("脏数据列有具体资产 Tooltip"), Tooltip.IsValid()))
-            {
-                Item->Dirty.Label = TEXT("是：骨骼");
-                Item->Dirty.Tooltip = TEXT("Skeleton：/Game/Dirty/Skeleton.Skeleton");
-                TestEqual(TEXT("脏状态文本动态更新"), Label->GetText().ToString(), Item->Dirty.Label);
-                TestEqual(TEXT("脏资产 Tooltip 动态更新"), StaticCastSharedRef<SToolTip>(Tooltip->AsWidget())->GetTextTooltip().ToString(), Item->Dirty.Tooltip);
-            }
-        }
-        if (Column == TEXT("Reason"))
-        {
-            const TSharedRef<SWidget> Text = ClipBox->GetChildren()->GetChildAt(0);
-            const TSharedPtr<IToolTip> Tooltip = Text->GetToolTip();
-            if (TestTrue(TEXT("匹配依据单元格提供 Tooltip"), Tooltip.IsValid()))
-            {
-                TestEqual(TEXT("Tooltip 显示匹配证据而非依据名称"),
-                    StaticCastSharedRef<SToolTip>(Tooltip->AsWidget())->GetTextTooltip().ToString(), Item->ReasonTooltip);
-            }
-        }
-    }
-    return true;
-}
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FImportAssistantGroupFrameTest, "ImportAssistant.Editor.GroupFrameEdges",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-bool FImportAssistantGroupFrameTest::RunTest(const FString&)
-{
-    FResultNode Header;
-    Header.bGroup = true;
-    FGroupFrameEdges Edges = GetGroupFrameEdges(Header, true);
-    TestTrue(TEXT("展开组标题只画顶边，底边留给正文末尾"), Edges.bTop && !Edges.bBottom);
-    TestEqual(TEXT("小组上方保持独立间距"), Edges.TopInset, 8.0f);
-    Edges = GetGroupFrameEdges(Header, false);
-    TestTrue(TEXT("折叠后标题形成完整封闭边框"), Edges.bTop && Edges.bBottom);
-    FResultNode Body;
-    Edges = GetGroupFrameEdges(Body, false);
-    TestTrue(TEXT("正文中间只延续两侧，不产生内部横线"), !Edges.bTop && !Edges.bBottom && Edges.TopInset == 0);
-    Body.bLastInGroup = true;
-    Edges = GetGroupFrameEdges(Body, false);
-    TestTrue(TEXT("组尾资产闭合底边"), !Edges.bTop && Edges.bBottom);
-    FResultNode Empty;
-    Empty.bLastInGroup = true;
-    TestTrue(TEXT("零匹配占位项也封闭底边"), GetGroupFrameEdges(Empty, false).bBottom);
-    return true;
-}
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FImportAssistantUpdateControlTest, "ImportAssistant.Editor.UpdateToggleAndToolbar",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-bool FImportAssistantUpdateControlTest::RunTest(const FString&)
-{
-    const TSharedRef<SImportAssistantWindow> Window = SNew(SImportAssistantWindow).LoadSavedSettings(false);
-    Window->SlatePrepass();
-    TMap<FName, TSharedRef<SWidget>> Tagged;
-    TFunction<void(TSharedRef<SWidget>)> Visit = [&Visit, &Tagged](TSharedRef<SWidget> Widget)
-    {
-        if (!Widget->GetTag().IsNone()) { Tagged.Add(Widget->GetTag(), Widget); }
-        FChildren* Children = Widget->GetChildren();
-        for (int32 Index = 0; Index < Children->Num(); ++Index) { Visit(Children->GetChildAt(Index)); }
-    };
-    Visit(Window);
-    TFunction<int32(TSharedRef<SWidget>)> CountButtons = [&CountButtons](TSharedRef<SWidget> Widget)
-    {
-        int32 Count = Widget->GetType() == FName(TEXT("SButton")) ? 1 : 0;
-        FChildren* Children = Widget->GetChildren();
-        for (int32 Index = 0; Index < Children->Num(); ++Index) { Count += CountButtons(Children->GetChildAt(Index)); }
-        return Count;
-    };
-    const TSharedRef<SWidget>* Actions = Tagged.Find(FName(TEXT("ImportAssistant.ResultActions")));
-    const TSharedRef<SWidget>* Information = Tagged.Find(FName(TEXT("ImportAssistant.InformationArea")));
-    const TSharedRef<SWidget>* Button = Tagged.Find(FName(TEXT("ImportAssistant.UpdateToggle")));
-    const TSharedRef<SWidget>* Export = Tagged.Find(FName(TEXT("ImportAssistant.ExportReport")));
-    if (!TestTrue(TEXT("操作区、信息区、合并按钮和报告按钮均存在"), Actions && Information && Button && Export)) { return false; }
-    TestEqual(TEXT("结果区只保留明确同源按钮和更新停止按钮"), CountButtons(*Actions), 2);
-    TestEqual(TEXT("信息区仅保留一个报告按钮"), CountButtons(*Information), 1);
-    const TSharedRef<SWrapBox> ActionBox = StaticCastSharedRef<SWrapBox>(*Actions);
-    const FGeometry ActionGeometry = FGeometry::MakeRoot(FVector2f(1200, 100), FSlateLayoutTransform());
-    ActionBox->Tick(ActionGeometry, FPlatformTime::Seconds(), 0);
-    Window->SlatePrepass();
-    FArrangedChildren ActionLayout(EVisibility::Visible);
-    ActionBox->ArrangeChildren(ActionGeometry, ActionLayout);
-    if (TestEqual(TEXT("宽窗口两个操作按钮同排排列"), ActionLayout.Num(), 2))
-    {
-        const FVector2D LastPosition = ActionLayout[1].Geometry.LocalToAbsolute(FVector2f::ZeroVector);
-        const FVector2D LastSize = ActionLayout[1].Geometry.GetLocalSize();
-        TestTrue(TEXT("操作按钮位于右侧而非靠左排列"), FMath::IsNearlyEqual(LastPosition.X + LastSize.X, 1200.0, 0.1));
-    }
-    TestEqual(TEXT("空闲按钮文字"), Window->UpdateButtonText().ToString(), FString(TEXT("更新所选…")));
-    TestFalse(TEXT("无有效检索选择时不能执行更新"), Window->CanToggleUpdate());
-    Window->ToggleUpdate();
-    TestFalse(TEXT("无选择点击不会进入运行状态或确认框"), Window->Queue.IsRunning());
-
-    auto Record = MakeShared<FAssetRecord, ESPMode::ThreadSafe>();
-    Record->ObjectPath = FSoftObjectPath(TEXT("/Game/__ImportAssistantToolbar/NotLoaded.NotLoaded"));
-    FRowPtr Row = MakeShared<FMatchRow>();
-    Row->Asset = Record;
-    Row->File = TEXT("C:/ToolbarTest.fbx");
-    Row->SourceIndex = 0;
-    Row->bSelected = true;
-    Window->Queue.Start({Row});
-    Window->bWasRunning = true;
-    Window->SlatePrepass();
-    TestEqual(TEXT("更新开始后文字切为停止"), Window->UpdateButtonText().ToString(), FString(TEXT("停止更新")));
-    TestTrue(TEXT("运行时不受检索按钮禁用条件影响，可以停止"), Window->CanToggleUpdate());
-    TestTrue(TEXT("真正的按钮也保持可点击"), (*Button)->IsEnabled());
-    TestFalse(TEXT("运行中不能导出结果"), (*Export)->IsEnabled());
-    TestTrue(TEXT("停止 Tooltip 明确不回滚且不保存"), Window->UpdateButtonTooltip().ToString().Contains(TEXT("不会撤销，也不会自动保存")));
-    StaticCastSharedRef<SButton>(*Button)->SimulateClick();
-    Window->SlatePrepass();
-    TestTrue(TEXT("同一个按钮确实向队列发送停止请求"), Window->Queue.IsStopRequested());
-    TestEqual(TEXT("请求停止后提示等待"), Window->UpdateButtonText().ToString(), FString(TEXT("正在停止…")));
-    TestFalse(TEXT("请求停止后不允许重复点击"), Window->CanToggleUpdate());
-    TestFalse(TEXT("实际按钮也被禁用"), (*Button)->IsEnabled());
-    Window->ToggleUpdate();
-    TestTrue(TEXT("重复调用不会启动另一批次"), Window->Queue.IsStopRequested());
-    Window->Tick(FGeometry(), FPlatformTime::Seconds(), 0);
-    Window->SlatePrepass();
-    TestFalse(TEXT("队列已停止"), Window->Queue.IsRunning());
-    TestEqual(TEXT("结束后恢复更新入口文字"), Window->UpdateButtonText().ToString(), FString(TEXT("更新所选…")));
-    TestFalse(TEXT("没有有效检索范围的虚拟窗口结束后仍不能更新"), Window->CanToggleUpdate());
-    TestTrue(TEXT("结束后可以导出报告"), (*Export)->IsEnabled());
-    TestEqual(TEXT("剩余项被标记取消而未加载虚拟测试资产"), Row->Status, FString(TEXT("用户取消，未执行")));
-    return true;
-}
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FImportAssistantColumnVisibilityTest, "ImportAssistant.Editor.ColumnVisibilityAndToolbar",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-bool FImportAssistantColumnVisibilityTest::RunTest(const FString&)
-{
-    const TSharedRef<SImportAssistantWindow> Window = SNew(SImportAssistantWindow).LoadSavedSettings(false);
-    Window->SlatePrepass();
-    TSharedPtr<SWidget> Toolbar, Gear;
-    TFunction<void(TSharedRef<SWidget>)> Visit = [&Visit, &Toolbar, &Gear](TSharedRef<SWidget> Widget)
-    {
-        if (Widget->GetTag() == FName(TEXT("ImportAssistant.ColumnToolbar"))) { Toolbar = Widget; }
-        if (Widget->GetTag() == FName(TEXT("ImportAssistant.ColumnSettings"))) { Gear = Widget; }
-        FChildren* Children = Widget->GetChildren();
-        for (int32 Index = 0; Index < Children->Num(); ++Index) { Visit(Children->GetChildAt(Index)); }
-    };
-    Visit(Window);
-    if (!TestTrue(TEXT("列表上方有工具栏和列设置齿轮"), Toolbar.IsValid() && Gear.IsValid())) { return false; }
-    for (float Width : {1000.0f, 240.0f})
-    {
-        FArrangedChildren Layout(EVisibility::Visible);
-        Toolbar->ArrangeChildren(FGeometry::MakeRoot(FVector2f(Width, 32), FSlateLayoutTransform()), Layout);
-        if (TestEqual(TEXT("工具栏为说明与齿轮两项"), Layout.Num(), 2))
-        {
-            TestTrue(TEXT("窄宽窗口齿轮均贴右且不被说明挤出"),
-                FMath::IsNearlyEqual(Layout[1].Geometry.GetAbsolutePosition().X + Layout[1].Geometry.GetLocalSize().X, double(Width), 0.1));
-            TestTrue(TEXT("最右侧确实是齿轮按钮"), Layout[1].Widget == Gear);
-        }
-    }
-    TestTrue(TEXT("齿轮显示原生设置图标且 Tooltip 可用"), Gear->GetToolTip().IsValid());
-
-    auto Asset = MakeShared<FAssetRecord, ESPMode::ThreadSafe>();
-    Asset->Name = TEXT("Run");
-    Asset->AssetClassPath = FTopLevelAssetPath(TEXT("/Script/Engine.AnimSequence"));
-    Asset->ObjectPath = FSoftObjectPath(TEXT("/Game/ColumnTest/Run.Run"));
-    Asset->Sources.Add({TEXT("C:/ColumnTest/Run.fbx"), {}});
-    FRowPtr Item = MakeShared<FMatchRow>();
-    Item->Asset = Asset;
-    Item->File = TEXT("C:/ColumnTest/Run.fbx");
-    Item->SourceIndex = 0;
-    Item->bSelected = true;
-    Item->Status = TEXT("已选择");
-    Window->Files = {Item->File, TEXT("C:/ColumnTest/Empty.fbx")};
-    Window->Rows = {Item};
-    Window->SelectedCount = 1;
-    Window->RebuildGroups(false);
-    const auto BeforeGroups = Window->Groups;
-    Window->Tree->SetItemExpansion(Window->Groups[0], true);
-    Window->Tree->SetItemExpansion(Window->Groups[1], false);
-    Window->bSettingsDirty = false;
-    Window->bSearchRequested = true;
-    Window->CancelSearch = MakeShared<std::atomic_bool, ESPMode::ThreadSafe>(false);
-    const uint64 Revision = Window->Index->GetRevision();
-    const TSharedRef<SImportAssistantRow> Row = SNew(SImportAssistantRow, Window->Tree.ToSharedRef()).Item(Item)
-        .Node(Window->Groups[0]->Children[0]).Presentation(Window->AssetPresentation.Get(Asset->AssetClassPath)).Select([](bool) {}).CanEdit([] { return true; });
-    const TSharedRef<SWidget> Cells = Row->GetChildren()->GetChildAt(0);
-    TestEqual(TEXT("默认资产行生成全部信息列"), Cells->GetChildren()->Num(), int32(UE_ARRAY_COUNT(OptionalResultColumns)) + 2);
-
-    const TSharedRef<SMultiBoxWidget> Menu = StaticCastSharedRef<SMultiBoxWidget>(Window->BuildColumnMenu());
-    TestFalse(TEXT("勾选时菜单保持打开，允许连续切换多列"), Menu->GetMultiBox()->ShouldCloseWindowAfterMenuSelection());
-    TArray<FUIAction> Actions;
-    for (const auto& Block : Menu->GetMultiBox()->GetBlocks())
-    {
-        if (Block->GetType() == EMultiBlockType::MenuEntry) { Actions.Add(Block->GetDirectActions()); }
-    }
-    if (!TestEqual(TEXT("菜单包含信息列及恢复默认，不含固定列"), Actions.Num(), int32(UE_ARRAY_COUNT(OptionalResultColumns)) + 1)) { return false; }
-    for (int32 Index = 0; Index < UE_ARRAY_COUNT(OptionalResultColumns); ++Index)
-    {
-        const FName Id = OptionalResultColumns[Index].Id;
-        TestTrue(TEXT("信息列默认显示：") + Id.ToString(), Window->IsResultColumnVisible(Id));
-        TestTrue(TEXT("勾选状态取自当前表头"), Actions[Index].GetCheckState() == ECheckBoxState::Checked);
-        Actions[Index].Execute();
-        TestFalse(TEXT("菜单动作实际隐藏表头：") + Id.ToString(), Window->ResultHeader->IsColumnGenerated(Id));
-        TestEqual(TEXT("隐藏后资产单元格同步减少，不保留空列"), Cells->GetChildren()->Num(), int32(UE_ARRAY_COUNT(OptionalResultColumns)) + 1 - Index);
-        TestTrue(TEXT("隐藏列写入内存配置"), Window->Settings->HiddenResultColumns.Contains(Id));
-        TestTrue(TEXT("同一个菜单动态取消勾选"), Actions[Index].GetCheckState() == ECheckBoxState::Unchecked);
-    }
-    Row->SlatePrepass();
-    FArrangedChildren CellLayout(EVisibility::Visible);
-    Cells->ArrangeChildren(FGeometry::MakeRoot(FVector2f(1000, 32), FSlateLayoutTransform()), CellLayout);
-    if (TestEqual(TEXT("全部信息列隐藏后仅保留两个固定单元格"), CellLayout.Num(), 2))
-    {
-        TestTrue(TEXT("选择列保持原固定宽度"), FMath::IsNearlyEqual(CellLayout[0].Geometry.GetLocalSize().X, 32.0, 0.1));
-        TestTrue(TEXT("资产名称填满剩余宽度，没有隐藏列占位"), FMath::IsNearlyEqual(CellLayout[1].Geometry.GetLocalSize().X, 968.0, 0.1));
-    }
-    Window->ToggleResultColumn(TEXT("Asset"));
-    Window->ToggleResultColumn(TEXT("Select"));
-    Window->ResultHeader->SetShowGeneratedColumn(TEXT("Asset"), false);
-    Window->ResultHeader->SetShowGeneratedColumn(TEXT("Select"), false);
-    TestTrue(TEXT("选择框与资产名不能被隐藏"), Window->IsResultColumnVisible(TEXT("Select")) && Window->IsResultColumnVisible(TEXT("Asset")));
-    Actions.Last().Execute();
-    TestTrue(TEXT("恢复默认清空隐藏配置"), Window->Settings->HiddenResultColumns.IsEmpty());
-    TestEqual(TEXT("恢复默认同步重建所有单元格"), Cells->GetChildren()->Num(), int32(UE_ARRAY_COUNT(OptionalResultColumns)) + 2);
-    for (int32 Index = 0; Index < UE_ARRAY_COUNT(OptionalResultColumns); ++Index)
-    {
-        TestTrue(TEXT("原菜单恢复已勾选状态"), Actions[Index].GetCheckState() == ECheckBoxState::Checked);
-    }
-    Actions[0].Execute();
-    Actions[0].Execute();
-    TestTrue(TEXT("同一列可再次勾选显示"), Window->IsResultColumnVisible(OptionalResultColumns[0].Id));
-    Window->Settings->HiddenResultColumns = {TEXT("Source"), TEXT("Asset"), TEXT("RemovedOldColumn")};
-    Window->ApplyResultColumnVisibility();
-    TestFalse(TEXT("重开时应用隐藏列表"), Window->IsResultColumnVisible(TEXT("Source")));
-    TestTrue(TEXT("旧配置或无效列名不影响固定列与新增列"), Window->IsResultColumnVisible(TEXT("Asset")) && Window->IsResultColumnVisible(TEXT("AutoReimport")));
-    TestTrue(TEXT("列显隐不替换分组、不会丢失结果"), Window->Groups == BeforeGroups && Window->Rows.Num() == 1 && Window->Rows[0] == Item);
-    TestTrue(TEXT("展开与折叠状态保持"), Window->Tree->IsItemExpanded(Window->Groups[0]) && !Window->Tree->IsItemExpanded(Window->Groups[1]));
-    TestTrue(TEXT("选择状态和结果文案保持"), Item->bSelected && Window->SelectedCount == 1 && Item->Status == TEXT("已选择"));
-    TestTrue(TEXT("不使检索失效、不取消后台匹配或修改索引"), !Window->bSettingsDirty && Window->bSearchRequested &&
-        !Window->CancelSearch->load() && Window->Index->GetRevision() == Revision);
-    TestFalse(TEXT("测试窗口关闭配置写入，不污染插件配置"), Window->bUseSavedSettings);
-    return true;
-}
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FImportAssistantColumnTooltipTest, "ImportAssistant.Editor.ColumnHeaderRemarks",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-bool FImportAssistantColumnTooltipTest::RunTest(const FString&)
-{
-    const auto Window = SNew(SImportAssistantWindow).LoadSavedSettings(false);
-    Window->SlatePrepass();
-    const auto Header = Window->ResultHeader;
-    const auto& Columns = Header->GetColumns();
-    TestEqual(TEXT("表头保留两固定列及全部信息列"), Columns.Num(), int32(UE_ARRAY_COUNT(OptionalResultColumns)) + 2);
-    TestEqual(TEXT("资产名表头说明点击定位"), Columns[Header->FindColumnIndex(TEXT("Asset"))].DefaultTooltip.Get().ToString(),
-        FString(TEXT("匹配的动画资产名称，点击可在内容浏览器中定位。单元格提示显示资产对象路径及关联 Skeleton。")));
-    for (int32 Index = 0; Index < UE_ARRAY_COUNT(OptionalResultColumns); ++Index)
-    {
-        const FOptionalResultColumn& Definition = OptionalResultColumns[Index];
-        const int32 ColumnIndex = Header->FindColumnIndex(Definition.Id);
-        if (!TestEqual(TEXT("信息列顺序不变：") + Definition.Id.ToString(), ColumnIndex, Index + 2)) { return false; }
-        const SHeaderRow::FColumn& Column = Columns[ColumnIndex];
-        TestEqual(TEXT("所有信息列表头均提供字段备注：") + Definition.Id.ToString(), Column.DefaultTooltip.Get().ToString(), FString(Definition.Description));
-        TestEqual(TEXT("字段备注改动不改变列宽：") + Definition.Id.ToString(), Column.GetWidth(), Definition.Width);
-    }
-    const FString VersionRemark = Columns[Header->FindColumnIndex(TEXT("VersionTime"))].DefaultTooltip.Get().ToString();
-    const FString DirtyRemark = Columns[Header->FindColumnIndex(TEXT("Dirty"))].DefaultTooltip.Get().ToString();
-    const FString AutoRemark = Columns[Header->FindColumnIndex(TEXT("AutoReimport"))].DefaultTooltip.Get().ToString();
-    TestTrue(TEXT("版本时间解释迁移至表头，含读取和保存边界"), VersionRemark.Contains(TEXT("上次导入时记录的源 FBX")) &&
-        VersionRemark.Contains(TEXT("不是重导入操作时间")) && VersionRemark.Contains(TEXT("当前内存导入记录")));
-    TestTrue(TEXT("脏状态表头说明未保存而非损坏"), DirtyRemark.Contains(TEXT("未保存修改")) && DirtyRemark.Contains(TEXT("不表示数据损坏")));
-    TestTrue(TEXT("自动重导入表头保留条件、独立保存和公开规则边界"), AutoRemark.Contains(TEXT("真实来源关联")) &&
-        AutoRemark.Contains(TEXT("独立保存")) && AutoRemark.Contains(TEXT("重置完成信号")));
-
-    // 核对原生表头实际生成的 Tooltip，而不只检查声明数据；隐藏及恢复列也应保留备注。
-    TArray<FString> RenderedRemarks;
-    TFunction<void(TSharedRef<SWidget>)> Visit = [&Visit, &RenderedRemarks](TSharedRef<SWidget> Widget)
-    {
-        if (Widget->GetType() == FName(TEXT("STableColumnHeader")))
-        {
-            const auto Border = Widget->GetChildren()->GetChildAt(0);
-            if (const auto Tooltip = Border->GetToolTip(); Tooltip.IsValid())
-            {
-                RenderedRemarks.Add(StaticCastSharedRef<SToolTip>(Tooltip->AsWidget())->GetTextTooltip().ToString());
-            }
-        }
-        FChildren* Children = Widget->GetChildren();
-        for (int32 Index = 0; Index < Children->Num(); ++Index) { Visit(Children->GetChildAt(Index)); }
-    };
-    Visit(Header.ToSharedRef());
-    for (const FOptionalResultColumn& Definition : OptionalResultColumns)
-    {
-        TestTrue(TEXT("悬停实际表头可读取字段备注：") + Definition.Id.ToString(), RenderedRemarks.Contains(FString(Definition.Description)));
-    }
-    Window->ToggleResultColumn(TEXT("VersionTime"));
-    RenderedRemarks.Reset();
-    Visit(Header.ToSharedRef());
-    TestFalse(TEXT("隐藏的版本列不再生成悬停项"), RenderedRemarks.Contains(VersionRemark));
-    Window->ToggleResultColumn(TEXT("VersionTime"));
-    RenderedRemarks.Reset();
-    Visit(Header.ToSharedRef());
-    TestTrue(TEXT("恢复显示后备注仍正确绑定"), RenderedRemarks.Contains(VersionRemark));
-
-    FAssetRecord Asset;
-    Asset.ObjectPath = FSoftObjectPath(TEXT("/Game/Tooltip/Run.Run"));
-    Asset.Sources.Add({TEXT("C:/Tooltip/Run.fbx"), {}, FDateTime(2026, 11, 9, 3, 4, 5)});
-    const auto Details = DescribeSourceVersion(Asset, 0);
-    TestTrue(TEXT("版本单元格只显示具体资产与记录"), Details.Tooltip.StartsWith(TEXT("资产：/Game/Tooltip/Run.Run")) &&
-        Details.Tooltip.Contains(TEXT("C:/Tooltip/Run.fbx")) && Details.Tooltip.Contains(TEXT("2026-11-09 03:04:05 UTC")));
-    TestFalse(TEXT("版本单元格不再重复字段含义"), Details.Tooltip.Contains(TEXT("不是重导入操作时间")) || Details.Tooltip.Contains(TEXT("只读取资产导入元数据")));
-    TestTrue(TEXT("仅修改列备注不影响配置或选择"), Window->Settings->HiddenResultColumns.IsEmpty() && Window->SelectedCount == 0);
-    return true;
-}
-#endif
-
-
-
-
-
-
-
-
-
-
-
-

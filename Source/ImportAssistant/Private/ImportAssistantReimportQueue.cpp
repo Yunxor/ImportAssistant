@@ -1,6 +1,6 @@
 #include "ImportAssistantReimportQueue.h"
 
-#include "Animation/AnimSequence.h"
+#include "ImportAssistantAssetAccess.h"
 #include "Animation/Skeleton.h"
 #include "AssetCompilingManager.h"
 #include "Editor.h"
@@ -88,10 +88,10 @@ void FReimportQueue::BeginItem()
 {
     Current = Items[Next++];
     Current->Status = TEXT("加载并复核资产…");
-    Animation.Reset(Cast<UAnimSequence>(Current->Asset->ObjectPath.TryLoad()));
-    if (!Animation.IsValid() || !Animation->AssetImportData || !Animation->GetSkeleton())
+    Asset.Reset(Current->Asset->ObjectPath.TryLoad());
+    if (!Asset.IsValid() || !GetImportData(Asset.Get()))
     {
-        Current->Status = TEXT("跳过：资产不存在、缺少导入数据或 Skeleton");
+        Current->Status = TEXT("跳过：资产不存在、缺少导入数据");
         return;
     }
     if (!Plan.IsValid())
@@ -115,33 +115,16 @@ void FReimportQueue::BeginItem()
         Current->Status = TEXT("失败：本次选定 FBX 不存在");
         return;
     }
-    const bool bInterchange = Animation->AssetImportData->IsA<UInterchangeAssetImportData>();
-    if (!bInterchange && !Animation->AssetImportData->IsA<UFbxAnimSequenceImportData>())
-    {
-        Current->Status = TEXT("跳过：尚未支持此导入数据类型，避免自动转换导入配置");
-        return;
-    }
-    if (bInterchange)
-    {
-        const TArray<FString> Formats = UInterchangeManager::GetInterchangeManager().GetSupportedAssetTypeFormats(EInterchangeTranslatorAssetType::Animations);
-        if (!UInterchangeManager::IsInterchangeImportEnabled() || !Formats.ContainsByPredicate([](const FString& Format)
-            { return Format.StartsWith(TEXT("fbx;"), ESearchCase::IgnoreCase); }))
-        {
-            Current->Status = TEXT("跳过：Interchange FBX 未启用，禁止自动转换到旧导入器");
-            return;
-        }
-    }
-    if (!bInterchange && Current->SourceIndex != 0)
-    {
-        Current->Status = TEXT("跳过：旧 FBX 动画工厂只支持主来源槽位");
-        return;
-    }
+    FString Unsupported;
+    if (!ValidateReimportSupport(Asset.Get(), Current->SourceIndex, Unsupported)) { Current->Status = TEXT("跳过：") + Unsupported; return; }
+    UAssetImportData* ImportData = GetImportData(Asset.Get());
+    const bool bInterchange = ImportData->IsA<UInterchangeAssetImportData>();
     // 仅在旧工厂同步调用期间关闭 Interchange，不能让全局开关跨帧保持改变。
     TUniquePtr<UE::Interchange::FScopedInterchangeImportEnableState> LegacyImportMode;
     if (!bInterchange) { LegacyImportMode = MakeUnique<UE::Interchange::FScopedInterchangeImportEnableState>(false); }
-    OriginalImportClass = Animation->AssetImportData->GetClass();
+    OriginalImportClass = GetImportData(Asset.Get())->GetClass();
     TArray<FString> Sources;
-    if (!FReimportManager::Instance()->CanReimport(Animation.Get(), &Sources) || !Sources.IsValidIndex(Current->SourceIndex))
+    if (!FReimportManager::Instance()->CanReimport(Asset.Get(), &Sources) || !Sources.IsValidIndex(Current->SourceIndex))
     {
         Current->Status = TEXT("跳过：当前导入后端不支持该资产或来源槽位");
         return;
@@ -161,25 +144,25 @@ void FReimportQueue::BeginItem()
     bChangedSource = NormalizePath(OldSource) != NormalizePath(Current->File);
     if (bChangedSource)
     {
-        FReimportManager::Instance()->UpdateReimportPath(Animation.Get(), Current->File, Current->SourceIndex);
+        FReimportManager::Instance()->UpdateReimportPath(Asset.Get(), Current->File, Current->SourceIndex);
         Sources.Reset();
-        FReimportManager::Instance()->CanReimport(Animation.Get(), &Sources);
+        FReimportManager::Instance()->CanReimport(Asset.Get(), &Sources);
         if (!Sources.IsValidIndex(Current->SourceIndex) || NormalizePath(Sources[Current->SourceIndex]) != NormalizePath(Current->File))
         {
-            FReimportManager::Instance()->UpdateReimportPath(Animation.Get(), OldSource, Current->SourceIndex);
+            FReimportManager::Instance()->UpdateReimportPath(Asset.Get(), OldSource, Current->SourceIndex);
             Current->Status = TEXT("失败：导入后端未接受指定来源，已尝试恢复路径；请检查未保存资产");
             return;
         }
     }
     Current->Status = TEXT("正在重导入…");
-    Result = FReimportManager::Instance()->ReimportAsync(Animation.Get(), false, false, Current->File,
+    Result = FReimportManager::Instance()->ReimportAsync(Asset.Get(), false, false, Current->File,
         nullptr, Current->SourceIndex, false, true, false);
 }
 
 void FReimportQueue::FinishItem()
 {
     TUniquePtr<UE::Interchange::FScopedInterchangeImportEnableState> LegacyImportMode;
-    if (OriginalImportClass.Get() == UFbxAnimSequenceImportData::StaticClass())
+    if (OriginalImportClass.IsValid() && OriginalImportClass->IsChildOf(UFbxAssetImportData::StaticClass()))
     {
         LegacyImportMode = MakeUnique<UE::Interchange::FScopedInterchangeImportEnableState>(false);
     }
@@ -190,33 +173,40 @@ void FReimportQueue::FinishItem()
         bFailed |= Message->GetResultType() == EInterchangeResultType::Error;
         if (Message->GetResultType() != EInterchangeResultType::Success) { Messages.Add(Message->GetText().ToString()); }
     }
-    if (Animation->AssetImportData->GetClass() != OriginalImportClass.Get())
+    const FPlannedUpdate& Approved = Plan->Items.FindChecked(Current->Asset->ObjectPath);
+    if (GetRelatedSkeleton(Asset.Get()) != Approved.Skeleton.Get())
+    {
+        bFailed = true;
+        Messages.Add(TEXT("导入改变了 Skeleton 关联，未保存，请检查资产"));
+    }
+    if (!GetImportData(Asset.Get()) || GetImportData(Asset.Get())->GetClass() != OriginalImportClass.Get())
     {
         bFailed = true;
         Messages.Add(TEXT("导入后端改变了导入数据类型，未保存，请检查资产"));
     }
+    UObject* Objects[] = {Asset.Get()};
+    FAssetCompilingManager::Get().FinishCompilationForObjects(Objects);
     if (!bFailed)
     {
-        const TArray<FString> FinalSources = Animation->AssetImportData->ExtractFilenames();
+        const TArray<FString> FinalSources = GetImportData(Asset.Get())->ExtractFilenames();
         if (!FinalSources.IsValidIndex(Current->SourceIndex) || NormalizePath(FinalSources[Current->SourceIndex]) != NormalizePath(Current->File) ||
-            Animation->GetNumberOfSampledKeys() == 0)
+            !HasValidImportedData(Asset.Get()))
         {
             bFailed = true;
-            Messages.Add(TEXT("导入完成但来源或动画关键帧检查失败"));
+            Messages.Add(TEXT("导入完成但来源或资产内容检查失败"));
         }
     }
     if (bFailed)
     {
-        if (bChangedSource) { FReimportManager::Instance()->UpdateReimportPath(Animation.Get(), OldSource, Current->SourceIndex); }
+        if (bChangedSource) { FReimportManager::Instance()->UpdateReimportPath(Asset.Get(), OldSource, Current->SourceIndex); }
         Current->Status = TEXT("导入失败，未保存；对象可能已被修改，请检查或从版本控制恢复。") + FString::Join(Messages, TEXT("；"));
         return;
     }
-    UObject* Objects[] = { Animation.Get() };
-    FAssetCompilingManager::Get().FinishCompilationForObjects(Objects);
-    // 只更新内存并保留脏标记；动画、Skeleton 和其他依赖均交给用户决定何时保存。
-    Animation->MarkPackageDirty();
-    UPackage* AnimationPackage = Animation->GetPackage();
-    UPackage* SkeletonPackage = Animation->GetSkeleton()->GetPackage();
+    // 只更新内存并保留脏标记；资产、Skeleton 和其他依赖均交给用户决定何时保存。
+    Asset->MarkPackageDirty();
+    UPackage* AssetPackage = Asset->GetPackage();
+    USkeleton* Skeleton = GetRelatedSkeleton(Asset.Get());
+    UPackage* SkeletonPackage = Skeleton ? Skeleton->GetPackage() : nullptr;
     TArray<TWeakObjectPtr<UPackage>> Modified;
     {
         FScopeLock Lock(&DirtyMutex);
@@ -224,13 +214,21 @@ void FReimportQueue::FinishItem()
         Modified = DirtiedPackages.Array();
     }
     bItemSucceeded = true;
-    // 只接受本项导入自身产生的动画和骨骼变更，项间的外部编辑仍会使许可失效。
-    for (UPackage* Package : {AnimationPackage, SkeletonPackage})
+    // 只接受本项导入自身产生的资产及直接依赖包变更，项间的外部编辑仍会使许可失效。
+    for (const auto& WeakPackage : Plan->Items.FindChecked(Current->Asset->ObjectPath).Packages)
     {
+        UPackage* Package = WeakPackage.Get();
         Plan->AcceptedRevisions.Add(Package, Plan->Changes->Get(Package));
         Plan->AcceptedDirtyStates.Add(Package, Package->IsDirty());
     }
-    if (SkeletonPackage != AnimationPackage && SkeletonPackage->IsDirty())
+    for (const auto& Dependency : Approved.Dependencies)
+    {
+        if (UObject* Object = Dependency.Get(); Object && Object != Skeleton && Object->GetPackage() != AssetPackage && Object->GetPackage()->IsDirty())
+        {
+            Messages.Add(TEXT("直接关联依赖请检查后手动保存：") + Object->GetPathName());
+        }
+    }
+    if (SkeletonPackage && SkeletonPackage != AssetPackage && SkeletonPackage->IsDirty())
     {
         Messages.Add(TEXT("Skeleton 待手动保存：") + SkeletonPackage->GetName());
     }
@@ -238,7 +236,7 @@ void FReimportQueue::FinishItem()
     for (const TWeakObjectPtr<UPackage>& WeakPackage : Modified)
     {
         UPackage* Package = WeakPackage.Get();
-        if (Package && Package != AnimationPackage && Package != SkeletonPackage && Package->IsDirty())
+        if (Package && Package != AssetPackage && Package != SkeletonPackage && Package->IsDirty())
         {
             Dependencies.Add(Package->GetName());
         }
@@ -263,7 +261,7 @@ void FReimportQueue::ReleaseItem()
         DirtiedPackages.Reset();
     }
     Result.Reset();
-    Animation.Reset();
+    Asset.Reset();
     Current.Reset();
     OldSource.Reset();
     bChangedSource = false;

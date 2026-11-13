@@ -8,7 +8,7 @@ namespace ImportAssistant
 {
 TArray<FResultNodePtr> BuildResultGroups(const TArray<FString>& Files, const TArray<FRowPtr>& Rows, bool bPending, const TArray<FFileSearchScope>& Scopes, const TMap<FString, FAutoReimportInfo>& AutoReimportFiles)
 {
-    TMap<FString, const FFileSearchScope*> ScopeByFile;
+    TMultiMap<FString, const FFileSearchScope*> ScopeByFile;
     for (const FFileSearchScope& Scope : Scopes) { ScopeByFile.Add(NormalizePath(Scope.File), &Scope); }
     TArray<FResultNodePtr> Groups;
     TMap<FString, FResultNodePtr> ByFile;
@@ -21,37 +21,23 @@ TArray<FResultNodePtr> BuildResultGroups(const TArray<FString>& Files, const TAr
         Group->File = File;
         Group->Title = FPaths::GetBaseFilename(File);
         Group->Tooltip = File;
-        if (const FFileSearchScope* const* Scope = ScopeByFile.Find(Key))
+        TArray<const FFileSearchScope*> FileScopes;
+        ScopeByFile.MultiFind(Key, FileScopes, true);
+        for (const auto* Scope : FileScopes)
         {
-            Group->ScopeSummary = (*Scope)->Summary;
-            if (!(*Scope)->TemplateRoots.IsEmpty()) { Group->ScopeSummary += TEXT("\n目标目录：") + FString::Join((*Scope)->TemplateRoots, TEXT("；")); }
-            Group->ScopeDetails = (*Scope)->Details;
+            if (!Group->ScopeSummary.IsEmpty()) { Group->ScopeSummary += TEXT("\n"); Group->ScopeDetails += TEXT("\n\n"); }
+            Group->ScopeSummary += Scope->Summary;
+            if (!Scope->TemplateRoots.IsEmpty()) { Group->ScopeSummary += TEXT("\n目标目录：") + FString::Join(Scope->TemplateRoots, TEXT("；")); }
+            Group->ScopeDetails += Scope->Details;
         }
         Groups.Add(Group);
         ByFile.Add(Key, Group);
     }
-    FResultNodePtr Unknown;
     for (const FRowPtr& Row : Rows)
     {
-        FResultNodePtr Group;
-        if (Row->File.IsEmpty())
-        {
-            if (!Unknown)
-            {
-                Unknown = MakeShared<FResultNode>();
-                Unknown->bGroup = true;
-                Unknown->Title = TEXT("来源未知");
-                Unknown->Tooltip = TEXT("缺少可用来源记录，尚未确认与本次任何 FBX 的关系");
-                Groups.Add(Unknown);
-            }
-            Group = Unknown;
-        }
-        else
-        {
-            const FResultNodePtr* Found = ByFile.Find(NormalizePath(Row->File));
-            if (!Found) { continue; }
-            Group = *Found;
-        }
+        const FResultNodePtr* Found = ByFile.Find(NormalizePath(Row->File));
+        if (!Found) { continue; }
+        const FResultNodePtr& Group = *Found;
         FResultNodePtr Child = MakeShared<FResultNode>();
         Child->Row = Row;
         Group->Children.Add(Child);

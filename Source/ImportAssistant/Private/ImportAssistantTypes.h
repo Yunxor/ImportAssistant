@@ -29,6 +29,7 @@ struct FFileSearchScope
     FString Details;
     bool bRecursive = true;
     bool bLimitedToTemplates = false;
+    FTopLevelAssetPath AssetClassPath;
 };
 
 struct FSourceRecord
@@ -36,6 +37,7 @@ struct FSourceRecord
     FString Original;
     TArray<FString> Candidates;
     FDateTime ImportedTimestampUtc = FDateTime(0);
+    FString DisplayLabel;
 };
 
 struct FAssetRecord
@@ -80,14 +82,16 @@ struct FAutoReimportInfo
 struct FDirtyAssetInfo
 {
     FString Label = TEXT("无法确认");
-    FString Tooltip = TEXT("尚未检查动画及关联 Skeleton 的未保存修改");
-    FString AnimationPath;
+    FString Tooltip = TEXT("尚未检查资产及直接关联对象的未保存修改");
+    FString AssetPath;
+    FString AssetLabel;
+    TArray<FString> DirtyDependencies;
     FString SkeletonPath;
-    bool bAnimationDirty = false;
+    bool bAssetDirty = false;
     bool bSkeletonDirty = false;
     bool bKnown = false;
 
-    bool IsDirty() const { return bAnimationDirty || bSkeletonDirty; }
+    bool IsDirty() const { return bAssetDirty || bSkeletonDirty || !DirtyDependencies.IsEmpty(); }
 };
 
 struct FSourceVersionInfo
@@ -122,7 +126,8 @@ struct FSearchOutput
 {
     TArray<FRowPtr> Rows;
     TArray<FString> UnmatchedFiles;
-    int32 UnknownCount = 0;
+    // 检索范围内无来源且未命中本次任何 FBX 的资产数，仅用于范围诊断，不对应结果行。
+    int32 UnmatchedUnknownCount = 0;
     double Seconds = 0;
 };
 }

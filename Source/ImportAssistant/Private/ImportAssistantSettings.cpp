@@ -2,6 +2,7 @@
 
 #include "HAL/FileManager.h"
 #include "ImportAssistantMatcher.h"
+#include "ImportAssistantAssetAccess.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/PackageName.h"
@@ -10,6 +11,22 @@
 UImportAssistantSettings::UImportAssistantSettings()
 {
     AssetDirectories.AddDefaulted_GetRef().Path = TEXT("/Game");
+}
+
+TArray<EImportAssistantAssetCategory> UImportAssistantSettings::GetAssetCategories() const
+{
+    TArray<EImportAssistantAssetCategory> Values;
+    if (bIncludeAnimations) { Values.Add(EImportAssistantAssetCategory::Animation); }
+    if (bIncludeStaticMeshes) { Values.Add(EImportAssistantAssetCategory::StaticMesh); }
+    if (bIncludeSkeletalMeshes) { Values.Add(EImportAssistantAssetCategory::SkeletalMesh); }
+    return Values;
+}
+
+TArray<FTopLevelAssetPath> UImportAssistantSettings::GetAssetClasses() const
+{
+    TArray<FTopLevelAssetPath> Values;
+    for (auto Category : GetAssetCategories()) { Values.Add(ImportAssistant::GetAssetClassPath(Category)); }
+    return Values;
 }
 
 FString UImportAssistantSettings::GetPluginConfigFilename() const
@@ -47,6 +64,7 @@ bool UImportAssistantSettings::LoadFromFile(const FString& Filename, FString& Ou
     HiddenResultColumns.Reset();
     bUseStorageTemplates = false;
     StorageSearchMode = EImportAssistantStorageSearchMode::PreferTemplate;
+    bIncludeAnimations = bIncludeStaticMeshes = bIncludeSkeletalMeshes = true;
     FLoadConfigParams Params;
     Params.ConfigClass = GetClass();
     Params.OverrideFile = &File;
@@ -139,6 +157,7 @@ bool UImportAssistantSettings::Parse(TArray<FName>& OutRoots, TArray<ImportAssis
         }
         OutRoots.AddUnique(FName(Root));
     }
+    if (GetAssetCategories().IsEmpty()) { OutError = TEXT("请至少启用一种资产类型。"); return false; }
     if (OutRoots.IsEmpty() || (!bMatchPath && !bMatchKeyword))
     {
         OutError = TEXT("请指定至少一个已挂载资产目录，并启用至少一种匹配方式。");

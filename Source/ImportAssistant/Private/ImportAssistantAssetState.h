@@ -4,7 +4,7 @@
 #include "HAL/CriticalSection.h"
 #include "UObject/StrongObjectPtr.h"
 
-class UAnimSequence;
+class UAssetImportData;
 class USkeleton;
 class UPackage;
 
@@ -31,7 +31,11 @@ private:
 struct FPlannedUpdate
 {
     FRowPtr Row;
-    TStrongObjectPtr<UAnimSequence> Animation;
+    TStrongObjectPtr<UObject> Object;
+    TWeakObjectPtr<UAssetImportData> ImportData;
+    TArray<TWeakObjectPtr<UObject>> Dependencies;
+    TArray<TWeakObjectPtr<UPackage>> Packages;
+    FString ContentDescription;
     TWeakObjectPtr<USkeleton> Skeleton;
     FString SourceJson;
     FString OriginalSource;

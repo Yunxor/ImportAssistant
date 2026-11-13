@@ -18,6 +18,15 @@ public:
     UPROPERTY(EditAnywhere, Config, Category = "检索范围", meta = (DisplayName = "资产目录", LongPackageName, ForceShowPluginContent))
     TArray<FDirectoryPath> AssetDirectories;
 
+    UPROPERTY(EditAnywhere, Config, Category = "检索范围|资产类型", meta = (DisplayName = "动画序列"))
+    bool bIncludeAnimations = true;
+
+    UPROPERTY(EditAnywhere, Config, Category = "检索范围|资产类型", meta = (DisplayName = "静态模型"))
+    bool bIncludeStaticMeshes = true;
+
+    UPROPERTY(EditAnywhere, Config, Category = "检索范围|资产类型", meta = (DisplayName = "骨骼模型"))
+    bool bIncludeSkeletalMeshes = true;
+
     UPROPERTY(EditAnywhere, Config, Category = "检索范围", meta = (DisplayName = "递归子目录"))
     bool bRecursive = true;
 
@@ -52,6 +61,8 @@ public:
     UPROPERTY(Config)
     TArray<FName> HiddenResultColumns;
 
+    TArray<EImportAssistantAssetCategory> GetAssetCategories() const;
+    TArray<FTopLevelAssetPath> GetAssetClasses() const;
     FString GetPluginConfigFilename() const;
     bool LoadPluginConfig(FString& OutError);
     bool SavePluginConfig(FString& OutError);

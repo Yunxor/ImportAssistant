@@ -1,6 +1,7 @@
 #include "ImportAssistantStorageTemplates.h"
 
 #include "Misc/PackageName.h"
+#include "ImportAssistantAssetAccess.h"
 #include "Misc/Paths.h"
 
 namespace ImportAssistant
@@ -222,6 +223,46 @@ bool BuildStorageSearchPlan(const TArray<FImportAssistantStorageTemplate>& Templ
     for (const FString& Root : IndexRoots) { OutIndexRoots.Add(FName(Root)); }
     return true;
 }
+bool BuildMultiTypeStoragePlan(const TArray<FImportAssistantStorageTemplate>& Templates, bool bEnabled,
+    EImportAssistantStorageSearchMode Mode, const TArray<EImportAssistantAssetCategory>& Categories, const TArray<FString>& Files,
+    const TArray<FName>& BaseRoots, bool bRecursive, TArray<FFileSearchScope>& OutScopes, TArray<FName>& OutIndexRoots, FString& OutError)
+{
+    OutScopes.Reset(); OutIndexRoots.Reset(); OutError.Reset();
+    if (Categories.IsEmpty()) { OutError = TEXT("未指定资产类别"); return false; }
+    TArray<FString> AllRoots;
+    for (auto Category : Categories)
+    {
+        TArray<FFileSearchScope> Scopes;
+        TArray<FName> Roots;
+        if (!BuildStorageSearchPlan(Templates, bEnabled, Mode, Category, Files, BaseRoots, bRecursive, Scopes, Roots, OutError)) { return false; }
+        const auto Class = GetAssetClassPath(Category);
+        // 未开启模板时也保留类型范围，禁止批量索引合并后跨类别串入其他类型的目录。
+        if (Scopes.IsEmpty())
+        {
+            for (const FString& File : Files)
+            {
+                auto& Scope = Scopes.AddDefaulted_GetRef();
+                Scope.File = File; Scope.bRecursive = bRecursive;
+                for (FName Root : BaseRoots) { Scope.SearchRoots.Add(Root.ToString()); }
+                Scope.Summary = TEXT("使用原资产目录");
+                Scope.Details = TEXT("实际范围：") + FString::Join(Scope.SearchRoots, TEXT("；"));
+            }
+        }
+        for (auto& Scope : Scopes)
+        {
+            Scope.AssetClassPath = Class;
+            const FString Label = GetAssetTypeLabel(Class);
+            Scope.Summary = Label + TEXT("：") + Scope.Summary;
+            Scope.Details = TEXT("资产类别：") + Label + TEXT("\n") + Scope.Details;
+            OutScopes.Add(MoveTemp(Scope));
+        }
+        for (FName Root : Roots) { AllRoots.Add(Root.ToString()); }
+    }
+    CompactStorageRoots(AllRoots, bRecursive);
+    for (const FString& Root : AllRoots) { OutIndexRoots.Add(FName(Root)); }
+    return true;
+}
+
 }
 
 

@@ -5,7 +5,7 @@
 #include "HAL/CriticalSection.h"
 #include "UObject/StrongObjectPtr.h"
 
-class UAnimSequence;
+class UAssetImportData;
 class UPackage;
 
 namespace ImportAssistant
@@ -35,7 +35,7 @@ private:
     bool bTrackingImport = false;
     bool bItemSucceeded = false;
     FRowPtr Current;
-    TStrongObjectPtr<UAnimSequence> Animation;
+    TStrongObjectPtr<UObject> Asset;
     UE::Interchange::FAssetImportResultPtr Result;
     TSet<TWeakObjectPtr<UPackage>> DirtiedPackages;
     TSharedPtr<FReimportPlan> Plan;
